@@ -69,7 +69,7 @@ export async function authMiddleware(
     setCookie(context, cookieName, token, {
       httpOnly: true,
       secure: config.NODE_ENV === "production",
-      sameSite: "Lax",
+      sameSite: config.NODE_ENV === "production" ? "None" : "Lax",
       expires: expiresAt,
       path: "/",
       domain: config.sessionCookieDomain,
