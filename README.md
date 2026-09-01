@@ -30,7 +30,7 @@ Speech-to-text ingredient capture, push notifications, grocery fulfillment, paym
 
 ## Local configuration
 
-Copy `backend/.env.example` to `backend/.env`, replace `[DATABASE_PASSWORD]` with the Supabase database password, and copy `frontend/.env.example` to `frontend/.env`. Do not commit either file. Download the Supabase server root certificate from **Database → Settings → SSL Configuration** to `backend/prod-supabase.cer`, then replace the certificate path in `DATABASE_URL` with its absolute path.
+Copy `backend/.env.example` to `backend/.env`, replace `[DATABASE_PASSWORD]` with the Supabase database password, and copy `frontend/.env.example` to `frontend/.env`. Do not commit either file. Download the Supabase server root certificate from **Database → Settings → SSL Configuration** to `backend/prod-supabase.cer`. The backend loads this certificate automatically for verified SSL connections.
 
 ```bash
 cd backend && npm install && npm run db:generate && npm run dev
@@ -58,7 +58,7 @@ cd backend && npm run test:smoke
 ## Required deployment configuration
 
 - Set the application timezone per group (for example `Asia/Kolkata`); never infer it from a browser.
-- In Render, set `DATABASE_URL` as a secret using Supabase's Session pooler connection string. Configure certificate verification with Supabase's server root certificate before enabling SSL enforcement.
+- In Render, set `DATABASE_URL` as a secret using Supabase's Session pooler connection string. Commit the public Supabase server root certificate at `backend/prod-supabase.cer`; the backend uses it for certificate verification.
 - Configure `ALLOWED_CORS_ORIGINS`, `SESSION_TTL_DAYS`, and any monitoring secrets as Render environment variables. Sessions default to a rolling 365-day lifetime; set `SESSION_TTL_DAYS` to a shorter value if required by your security policy.
 - Apply Drizzle migrations before each release; use forward-only corrective migrations in production.
 - Enforce HTTPS, a CSP, rate limits on write endpoints, and server-side membership/role checks.
