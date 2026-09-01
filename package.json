@@ -1,0 +1,10 @@
+{
+  "name": "mealflow",
+  "private": true,
+  "scripts": {
+    "build": "npm --prefix backend run build && npm --prefix frontend run build",
+    "lint": "npm --prefix backend run lint && npm --prefix frontend run lint",
+    "format:check": "npm --prefix backend run format:check && npm --prefix frontend run format:check",
+    "test": "npm --prefix backend test"
+  }
+}

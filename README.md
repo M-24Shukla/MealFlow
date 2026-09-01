@@ -9,17 +9,16 @@ MealFlow is a multi-tenant web app for shared kitchens and mess groups. It lets 
 | Layer | Choice | Reason |
 |---|---|---|
 | Web UI | React + TypeScript + Vite | Fast, accessible responsive dashboard with a small client bundle. |
-| API | Cloudflare Workers + Hono | Typed HTTP API, low operational overhead, and edge deployment. |
-| Data | Cloudflare D1 (SQLite) | Relational data and transactional writes for groups, menus, membership, attendance, and preparation. |
-| Data access | Drizzle ORM + raw prepared statements for critical queries | Typed schema/migrations; no interpolated SQL. |
-| Authentication | OpenAI Sites SIWC for an internal workspace deployment | No passwords to store; identity is verified at the server boundary. |
-| File/audio storage | Cloudflare R2, phase 2 only | Required only when ingredient audio recordings are retained. |
-| Observability | Workers Analytics + Sentry | Request errors, performance, and release attribution. |
-| CI/CD | GitHub Actions + Cloudflare deployment | Migration gate, tests, and controlled promotion. |
+| API | Node.js + Hono | Typed REST API running as a Render web service. |
+| Data | Supabase PostgreSQL | Relational storage and transactional writes for groups, memberships, and meal operations. |
+| Data access | Drizzle ORM | Typed PostgreSQL schema and generated migrations. |
+| Authentication | Email/password + HTTP-only sessions | Supports invited external residents without a workspace account. |
+| Observability | Render logs + Sentry | Request errors, performance, and release attribution. |
+| CI/CD | Render Blueprint | Repeatable static-site, API, and PostgreSQL deployment. |
 
 ## Product scope: MVP
 
-1. Sign in and create/join a group by an invite token (not a raw UUID).
+1. Sign in, create a group, or request to join one from its landing page; the creator approves consumer/cook roles.
 2. Set per-day meal windows and weekly menus with multiple food items and recipe links.
 3. Resolve the active meal using the group's IANA timezone and return its recipe links.
 4. Record recurring attendance rules and dated `PRESENT`/`ABSENT` overrides.
@@ -31,23 +30,37 @@ Speech-to-text ingredient capture, push notifications, grocery fulfillment, paym
 
 ## Local configuration
 
-Copy `.env.example` to `.env`. Do not commit `.env`.
+Copy `backend/.env.example` to `backend/.env`, replace `[DATABASE_PASSWORD]` with the Supabase database password, and copy `frontend/.env.example` to `frontend/.env`. Do not commit either file. Download the Supabase server root certificate from **Database → Settings → SSL Configuration** to `backend/prod-supabase.cer`, then replace the certificate path in `DATABASE_URL` with its absolute path.
 
 ```bash
-npm install
-npm run db:migrate:local
-npm run dev
-npm test
-npm run build
+cd backend && npm install && npm run db:generate && npm run dev
+cd frontend && npm install && npm run dev
+```
+
+Run the committed schema migrations against Supabase before starting the API for the first time:
+
+```bash
+cd backend && npm run db:migrate
+```
+
+The integration suite writes isolated test records to the configured database and removes them afterward. Run it only against a dedicated Supabase test project:
+
+```bash
+cd backend && npm run test:integration
+```
+
+Run the release smoke suite against the configured Supabase project after applying migrations:
+
+```bash
+cd backend && npm run test:smoke
 ```
 
 ## Required deployment configuration
 
 - Set the application timezone per group (for example `Asia/Kolkata`); never infer it from a browser.
-- Bind a production D1 database as `DB`.
-- Turn on SIWC / workspace sign-in and restrict the deployment to the intended workspace or an explicit allow-list.
-- Configure `APP_ORIGIN`, `SENTRY_DSN`, and `LOG_LEVEL` as runtime secrets/variables.
-- Apply migrations before each release; back up/export D1 before destructive migrations.
+- In Render, set `DATABASE_URL` as a secret using Supabase's Session pooler connection string. Configure certificate verification with Supabase's server root certificate before enabling SSL enforcement.
+- Configure `ALLOWED_CORS_ORIGINS`, `SESSION_TTL_DAYS`, and any monitoring secrets as Render environment variables. Sessions default to a rolling 365-day lifetime; set `SESSION_TTL_DAYS` to a shorter value if required by your security policy.
+- Apply Drizzle migrations before each release; use forward-only corrective migrations in production.
 - Enforce HTTPS, a CSP, rate limits on write endpoints, and server-side membership/role checks.
 
-See `docs/api-contract.md`, `docs/architecture.md`, and `db/0001_initial.sql` for the implementation contract.
+See `openspec/changes/implement-weekly-menu-management/` for the implementation contract and `render.yaml` for deployment configuration.

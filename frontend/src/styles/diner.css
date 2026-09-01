@@ -1,0 +1,72 @@
+.attendance-workspace {
+  display: block;
+}
+.attendance-workspace > h2 {
+  font-family: Georgia, serif;
+  font-size: 1.7rem;
+  font-weight: 500;
+  margin: 0 0 16px;
+}
+.attendance-columns {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.attendance-card {
+  background: #fffdf7;
+  border: 1px solid #e1ddd0;
+  border-radius: 12px;
+  padding: 20px;
+}
+.attendance-card h3 {
+  font-family: Georgia, serif;
+  font-size: 1.35rem;
+  font-weight: 500;
+  margin: 0 0 14px;
+}
+.attendance-card form {
+  display: grid;
+  gap: 14px;
+}
+.attendance-card label {
+  display: grid;
+  gap: 6px;
+  font-weight: 700;
+}
+.attendance-card input,
+.attendance-card select {
+  border: 1px solid #d5d1c7;
+  border-radius: 8px;
+  color: inherit;
+  font: inherit;
+  padding: 10px 14px;
+}
+.attendance-card input[type="date"]::-webkit-calendar-picker-indicator {
+  margin-left: 6px;
+}
+.vacation-list {
+  margin: 0 0 16px;
+  padding-left: 20px;
+}
+.vacation-list li + li {
+  margin-top: 6px;
+}
+.vacation-list button {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  padding: 0 0 0 8px;
+  text-decoration: underline;
+}
+.attendance-card p button {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  padding: 0 4px;
+}
+@media (max-width: 700px) {
+  .attendance-columns {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,0 +1,1 @@
+ALTER TABLE "meal_occurrences" ADD COLUMN "materialized_at" timestamp with time zone;
