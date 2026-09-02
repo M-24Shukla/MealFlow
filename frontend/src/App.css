@@ -540,6 +540,49 @@ fieldset input {
   font-weight: 500;
   margin-top: 0;
 }
+.tab-list {
+  background: #fff;
+  border: 1px solid #e1ddd0;
+  border-radius: 8px;
+  display: grid;
+  gap: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0 0 24px;
+  padding: 3px;
+  width: 100%;
+}
+.panel .tab {
+  cursor: pointer;
+  display: block;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #597064;
+  font-weight: 700;
+  padding: 9px 12px;
+  white-space: nowrap;
+}
+.panel .tab.is-active {
+  background: #18352b;
+  border-color: #18352b;
+  color: #fffdf7;
+  box-shadow: 0 2px 5px rgba(24, 53, 43, 0.18);
+}
+.qr-scanner {
+  display: grid;
+  gap: 14px;
+}
+.qr-scanner p {
+  color: #597064;
+  line-height: 1.5;
+  margin: 0;
+}
+.qr-scanner video {
+  background: #18352b;
+  border-radius: 10px;
+  max-height: 300px;
+  width: 100%;
+}
 .panel form {
   display: grid;
   gap: 14px;
@@ -572,7 +615,8 @@ button:focus-visible,
 a:focus-visible,
 input:focus-visible,
 select:focus-visible,
-textarea:focus-visible {
+textarea:focus-visible,
+.tab:focus-visible {
   outline: 3px solid #d45b38;
   outline-offset: 3px;
 }

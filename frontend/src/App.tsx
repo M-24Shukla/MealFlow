@@ -11,6 +11,7 @@ import { CookWorkspace } from "./components/CookWorkspace";
 import { DinerActionItems } from "./components/DinerActionItems";
 import { DinerWorkspace } from "./components/DinerWorkspace";
 import { GroupJoinQr } from "./components/GroupJoinQr";
+import { QrJoinScanner } from "./components/QrJoinScanner";
 import { api } from "./lib/api";
 import {
   dateValue,
@@ -55,7 +56,8 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [group, setGroup] = useState<Group | null>(null);
   const [myGroups, setMyGroups] = useState<Group[]>([]);
-  const [mode, setMode] = useState<"login" | "register">("login");
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [joinMode, setJoinMode] = useState<"qr" | "invitation">("qr");
   const [message, setMessage] = useState("");
   const [messageTone, setMessageTone] = useState<"success" | "error">(
     "success",
@@ -248,12 +250,12 @@ export default function App() {
   const auth = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     void run(async () => {
-      const r = await api<{ user: User }>(`/auth/${mode}`, {
+      const r = await api<{ user: User }>(`/auth/${authMode}`, {
         method: "POST",
         body: JSON.stringify({
           email: authEmail,
           password: authPassword,
-          ...(mode === "register" ? { displayName: authDisplayName } : {}),
+          ...(authMode === "register" ? { displayName: authDisplayName } : {}),
         }),
       });
       setUser(r.user);
@@ -279,18 +281,23 @@ export default function App() {
       );
     });
   };
-  const join = (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
+  const joinWithCode = (code: string) => {
     void run(async () => {
-      const slug = joinGroupSlug.trim().toLowerCase();
+      const slug = code.trim().toLowerCase();
+      if (!slug) throw new Error("Enter or scan an invitation code.");
       const r = await api<{ group: Group }>(
         `/groups/public/${encodeURIComponent(slug)}`,
       );
+      setJoinGroupSlug(slug);
       setGroup(r.group);
       setActiveMeal(undefined);
       setMenus([]);
       if (user) await loadMenuWorkspace(r.group).catch(() => undefined);
     });
+  };
+  const join = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    joinWithCode(joinGroupSlug);
   };
   const request = (requestedRole: "CONSUMER" | "PRODUCER") =>
     void run(async () => {
@@ -554,32 +561,24 @@ export default function App() {
         <a className="brand" href="/">
           Meal<span>Flow</span>
         </a>
-        <div className="nav-actions">
-          {user ? (
-            <>
-              <span>{user.displayName}</span>
-              <button
-                onClick={() =>
-                  void run(async () => {
-                    await api("/auth/logout", { method: "POST" });
-                    setUser(null);
-                    setGroup(null);
-                    setMenus([]);
-                    setActiveMeal(undefined);
-                  })
-                }
-              >
-                Sign out
-              </button>
-            </>
-          ) : (
+        {user && (
+          <div className="nav-actions">
+            <span>{user.displayName}</span>
             <button
-              onClick={() => setMode(mode === "login" ? "register" : "login")}
+              onClick={() =>
+                void run(async () => {
+                  await api("/auth/logout", { method: "POST" });
+                  setUser(null);
+                  setGroup(null);
+                  setMenus([]);
+                  setActiveMeal(undefined);
+                })
+              }
             >
-              {mode === "login" ? "Register" : "Sign in"}
+              Sign out
             </button>
-          )}
-        </div>
+          </div>
+        )}
       </nav>
       {!isGroupPage && (
         <section className="hero">
@@ -664,13 +663,47 @@ export default function App() {
               <p className="empty">Restoring your session…</p>
             </div>
           ) : !user ? (
-            <div className="panel">
+            <div className="panel auth-card">
+              <div
+                className="tab-list"
+                role="tablist"
+                aria-label="Account access"
+              >
+                <span
+                  aria-controls="auth-form"
+                  aria-selected={authMode === "login"}
+                  className={authMode === "login" ? "tab is-active" : "tab"}
+                  onClick={() => setAuthMode("login")}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ")
+                      setAuthMode("login");
+                  }}
+                  role="tab"
+                  tabIndex={0}
+                >
+                  Sign in
+                </span>
+                <span
+                  aria-controls="auth-form"
+                  aria-selected={authMode === "register"}
+                  className={authMode === "register" ? "tab is-active" : "tab"}
+                  onClick={() => setAuthMode("register")}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ")
+                      setAuthMode("register");
+                  }}
+                  role="tab"
+                  tabIndex={0}
+                >
+                  Register
+                </span>
+              </div>
               <h2>
                 {inviteSlug
-                  ? mode === "login"
+                  ? authMode === "login"
                     ? "Sign in to join this group"
                     : "Create an account to join this group"
-                  : mode === "login"
+                  : authMode === "login"
                     ? "Sign in"
                     : "Create an account"}
               </h2>
@@ -680,8 +713,13 @@ export default function App() {
                   request your role after authentication.
                 </p>
               )}
-              <form onSubmit={auth} autoComplete="off">
-                {mode === "register" && (
+              <form
+                id="auth-form"
+                onSubmit={auth}
+                autoComplete="off"
+                role="tabpanel"
+              >
+                {authMode === "register" && (
                   <label>
                     Name
                     <input
@@ -713,14 +751,14 @@ export default function App() {
                     value={authPassword}
                     onChange={(event) => setAuthPassword(event.target.value)}
                     autoComplete={
-                      mode === "login" ? "current-password" : "new-password"
+                      authMode === "login" ? "current-password" : "new-password"
                     }
                     minLength={8}
                     required
                   />
                 </label>
                 <button className="primary" disabled={busy}>
-                  {mode === "login" ? "Sign in" : "Register"}
+                  {authMode === "login" ? "Sign in" : "Register"}
                 </button>
               </form>
             </div>
@@ -751,135 +789,182 @@ export default function App() {
               </form>
             </div>
           )}
-          <div className="panel">
-            <h2>Join a group</h2>
-            {!inviteSlug && (
-              <form onSubmit={join} autoComplete="off">
-                <label>
-                  Invitation code
-                  <input
-                    name="joinGroupSlug"
-                    value={joinGroupSlug}
-                    onChange={(event) =>
-                      setJoinGroupSlug(toGroupSlug(event.target.value))
-                    }
-                    placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                    autoComplete="off"
-                    required
-                  />
-                </label>
-                <button className="primary" disabled={busy}>
-                  Open group
-                </button>
-              </form>
-            )}
-            {group && (
-              <div className="group-summary">
-                <h3>{group.name}</h3>
-                <p>{group.timezone}</p>
-                {!user && (
-                  <p className="field-help">
-                    Sign in first to request to join this group.
-                  </p>
-                )}
-                {user && invitedMembership ? (
-                  <button
-                    className="primary"
-                    onClick={() => openGroup(invitedMembership)}
-                    disabled={busy}
+          {user && (
+            <div className="panel">
+              <h2>Join a group</h2>
+              {!inviteSlug && (
+                <>
+                  <div
+                    className="tab-list"
+                    role="tablist"
+                    aria-label="Join a group"
                   >
-                    Open your group
-                  </button>
-                ) : user && !group.roles ? (
-                  <div className="join-role-actions">
-                    <p>Choose how you would like to join this group.</p>
-                    <button
-                      className="secondary join-role-option"
-                      onClick={() => request("CONSUMER")}
-                      disabled={busy}
+                    <span
+                      aria-selected={joinMode === "qr"}
+                      className={joinMode === "qr" ? "tab is-active" : "tab"}
+                      onClick={() => setJoinMode("qr")}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ")
+                          setJoinMode("qr");
+                      }}
+                      role="tab"
+                      tabIndex={0}
                     >
-                      <span aria-hidden="true">🍽️</span>
-                      <span>
-                        <strong>Diner</strong>
-                        <small>View menus and manage your attendance.</small>
-                      </span>
-                    </button>
-                    <button
-                      className="secondary join-role-option"
-                      onClick={() => request("PRODUCER")}
-                      disabled={busy}
+                      Join via QR code
+                    </span>
+                    <span
+                      aria-selected={joinMode === "invitation"}
+                      className={
+                        joinMode === "invitation" ? "tab is-active" : "tab"
+                      }
+                      onClick={() => setJoinMode("invitation")}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ")
+                          setJoinMode("invitation");
+                      }}
+                      role="tab"
+                      tabIndex={0}
                     >
-                      <span aria-hidden="true">👨‍🍳</span>
-                      <span>
-                        <strong>Cook</strong>
-                        <small>Manage preparation and cook availability.</small>
-                      </span>
-                    </button>
+                      Invitation code
+                    </span>
                   </div>
-                ) : null}
-                {user && group.roles && (
-                  <button
-                    className="secondary"
-                    onClick={() =>
-                      void run(async () => {
-                        const result = await api<{
-                          activeMeal: ActiveMeal | null;
-                        }>(`/groups/${group.id}/active-meal`);
-                        setActiveMeal(result.activeMeal);
-                      })
-                    }
-                    disabled={busy}
-                  >
-                    View active meal
-                  </button>
-                )}
-                {activeMeal !== undefined && (
-                  <div className="active-meal" aria-live="polite">
-                    {activeMeal ? (
-                      <>
-                        <p className="eyebrow">Now serving</p>
-                        <h4>{mealName(activeMeal.mealType)}</h4>
-                        <p>
-                          {activeMeal.startsAt.slice(11, 16)}–
-                          {activeMeal.endsAt.slice(11, 16)} ·{" "}
-                          {activeMeal.timezone}
-                        </p>
-                        {activeMeal.items.length ? (
-                          <ul>
-                            {activeMeal.items.map((item) => (
-                              <li key={item.id}>
-                                {item.recipeUrl ? (
-                                  <a
-                                    href={item.recipeUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                  >
-                                    {item.name}
-                                  </a>
-                                ) : (
-                                  item.name
-                                )}
-                                <span>{mealName(item.category)}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        ) : (
-                          <p className="empty">
-                            No menu items have been added for this meal yet.
+                  {joinMode === "qr" ? (
+                    <QrJoinScanner
+                      disabled={busy}
+                      onScan={(code) => joinWithCode(code)}
+                    />
+                  ) : (
+                    <form onSubmit={join} autoComplete="off" role="tabpanel">
+                      <label>
+                        Invitation code
+                        <input
+                          name="joinGroupSlug"
+                          value={joinGroupSlug}
+                          onChange={(event) =>
+                            setJoinGroupSlug(toGroupSlug(event.target.value))
+                          }
+                          placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                          autoComplete="off"
+                          required
+                        />
+                      </label>
+                      <button className="primary" disabled={busy}>
+                        Open group
+                      </button>
+                    </form>
+                  )}
+                </>
+              )}
+              {group && (
+                <div className="group-summary">
+                  <h3>{group.name}</h3>
+                  <p>{group.timezone}</p>
+                  {!user && (
+                    <p className="field-help">
+                      Sign in first to request to join this group.
+                    </p>
+                  )}
+                  {user && invitedMembership ? (
+                    <button
+                      className="primary"
+                      onClick={() => openGroup(invitedMembership)}
+                      disabled={busy}
+                    >
+                      Open your group
+                    </button>
+                  ) : user && !group.roles ? (
+                    <div className="join-role-actions">
+                      <p>Choose how you would like to join this group.</p>
+                      <button
+                        className="secondary join-role-option"
+                        onClick={() => request("CONSUMER")}
+                        disabled={busy}
+                      >
+                        <span aria-hidden="true">🍽️</span>
+                        <span>
+                          <strong>Diner</strong>
+                          <small>View menus and manage your attendance.</small>
+                        </span>
+                      </button>
+                      <button
+                        className="secondary join-role-option"
+                        onClick={() => request("PRODUCER")}
+                        disabled={busy}
+                      >
+                        <span aria-hidden="true">👨‍🍳</span>
+                        <span>
+                          <strong>Cook</strong>
+                          <small>
+                            Manage preparation and cook availability.
+                          </small>
+                        </span>
+                      </button>
+                    </div>
+                  ) : null}
+                  {user && group.roles && (
+                    <button
+                      className="secondary"
+                      onClick={() =>
+                        void run(async () => {
+                          const result = await api<{
+                            activeMeal: ActiveMeal | null;
+                          }>(`/groups/${group.id}/active-meal`);
+                          setActiveMeal(result.activeMeal);
+                        })
+                      }
+                      disabled={busy}
+                    >
+                      View active meal
+                    </button>
+                  )}
+                  {activeMeal !== undefined && (
+                    <div className="active-meal" aria-live="polite">
+                      {activeMeal ? (
+                        <>
+                          <p className="eyebrow">Now serving</p>
+                          <h4>{mealName(activeMeal.mealType)}</h4>
+                          <p>
+                            {activeMeal.startsAt.slice(11, 16)}–
+                            {activeMeal.endsAt.slice(11, 16)} ·{" "}
+                            {activeMeal.timezone}
                           </p>
-                        )}
-                      </>
-                    ) : (
-                      <p className="empty">
-                        There is no active meal right now. Check back during a
-                        scheduled meal window.
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+                          {activeMeal.items.length ? (
+                            <ul>
+                              {activeMeal.items.map((item) => (
+                                <li key={item.id}>
+                                  {item.recipeUrl ? (
+                                    <a
+                                      href={item.recipeUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
+                                      {item.name}
+                                    </a>
+                                  ) : (
+                                    item.name
+                                  )}
+                                  <span>{mealName(item.category)}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <p className="empty">
+                              No menu items have been added for this meal yet.
+                            </p>
+                          )}
+                        </>
+                      ) : (
+                        <p className="empty">
+                          There is no active meal right now. Check back during a
+                          scheduled meal window.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </section>
       )}
       {isGroupPage && user && group?.id && group.roles && !isProducer && (
