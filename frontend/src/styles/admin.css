@@ -18,6 +18,13 @@
   margin: 24px 0 0;
   max-width: none;
 }
+.member-role-group + .member-role-group {
+  margin-top: 24px;
+}
+.member-role-group h3 {
+  font-size: 1.1rem;
+  margin: 20px 0 0;
+}
 @media (max-width: 700px) {
   .member-management-grid {
     grid-template-columns: 1fr;

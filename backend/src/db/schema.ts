@@ -403,6 +403,7 @@ export const mealOccurrences = pgTable(
     weeklyMenuId: uuid("weekly_menu_id").references(() => weeklyMenus.id, {
       onDelete: "set null",
     }),
+    isMenuOverridden: boolean("is_menu_overridden").default(false).notNull(),
     materializedAt: timestamp("materialized_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()

@@ -491,7 +491,9 @@ attendanceRoutes.post(
         weekday: isoWeekday(mealDate),
       });
       const item = items.find(
-        (entry) => entry.sourceMenuItemId === payload.itemId,
+        (entry) =>
+          entry.id === payload.itemId ||
+          entry.sourceMenuItemId === payload.itemId,
       );
       if (!item) {
         throw new HTTPException(400, {
