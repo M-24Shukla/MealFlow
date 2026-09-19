@@ -144,7 +144,7 @@ describe.runIf(runIntegration)("group role management", () => {
     });
   });
 
-  it("allows only the creator to promote and demote a consumer", async () => {
+  it("allows an administrator to promote and demote a consumer", async () => {
     const creator = await register("Creator Two");
     const consumer = await register("Consumer Two");
     const group = await createGroup(creator.cookie);
@@ -204,6 +204,56 @@ describe.runIf(runIntegration)("group role management", () => {
     );
     expect(protectedCreator.status).toBe(403);
   }, 20_000);
+
+  it("allows administrators to remove members and denies non-administrators", async () => {
+    const creator = await register("Removal Creator");
+    const administrator = await register("Removal Administrator");
+    const member = await register("Removal Member");
+    const group = await createGroup(creator.cookie);
+    await requestAndApprove(
+      group,
+      creator.cookie,
+      administrator.cookie,
+      "CONSUMER",
+    );
+    await requestAndApprove(group, creator.cookie, member.cookie, "CONSUMER");
+    const activeMemberships = await db
+      .select()
+      .from(memberships)
+      .where(eq(memberships.groupId, group.id));
+    const administratorMembership = activeMemberships.find(
+      (item) => item.userId === administrator.user.id,
+    )!;
+    const memberMembership = activeMemberships.find(
+      (item) => item.userId === member.user.id,
+    )!;
+
+    const promoted = await app.request(
+      `http://localhost/api/v1/groups/${group.id}/members/${administratorMembership.id}/admin`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json", cookie: creator.cookie },
+        body: JSON.stringify({ isAdmin: true }),
+      },
+    );
+    expect(promoted.status).toBe(200);
+
+    const denied = await app.request(
+      `http://localhost/api/v1/groups/${group.id}/members/${memberMembership.id}`,
+      { method: "DELETE", headers: { cookie: member.cookie } },
+    );
+    expect(denied.status).toBe(403);
+
+    const removed = await app.request(
+      `http://localhost/api/v1/groups/${group.id}/members/${memberMembership.id}`,
+      { method: "DELETE", headers: { cookie: administrator.cookie } },
+    );
+    expect(removed.status).toBe(200);
+    await expect(removed.json()).resolves.toMatchObject({
+      membershipId: memberMembership.id,
+      status: "REMOVED",
+    });
+  });
 
   it("rejects producer promotion", async () => {
     const creator = await register("Creator Three");
@@ -318,6 +368,146 @@ describe.runIf(runIntegration)("group role management", () => {
       { headers: { cookie: creator.cookie } },
     );
     await expect(noActiveMeal.json()).resolves.toEqual({ activeMeal: null });
+  }, 20_000);
+
+  it("lets a diner replace one dated meal item without changing the weekly menu", async () => {
+    const creator = await register("Menu Override Creator");
+    const diner = await register("Menu Override Diner");
+    const group = await createGroup(creator.cookie);
+    await requestAndApprove(group, creator.cookie, diner.cookie, "CONSUMER");
+    await app.request(`http://localhost/api/v1/groups/${group.id}/schedule`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", cookie: creator.cookie },
+      body: JSON.stringify({
+        entries: [
+          {
+            weekday: 1,
+            mealType: "DINNER",
+            startTime: "18:00",
+            endTime: "22:00",
+            enabled: true,
+          },
+        ],
+      }),
+    });
+    const menuResponse = await app.request(
+      `http://localhost/api/v1/groups/${group.id}/menus/1/DINNER`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json", cookie: creator.cookie },
+        body: JSON.stringify({
+          items: [
+            { name: "Dal", category: "VEG" },
+            { name: "Rice", category: "VEGAN" },
+            { name: "Raita", category: "VEG" },
+          ],
+        }),
+      },
+    );
+    expect(menuResponse.status).toBe(200);
+    await app.request(
+      `http://localhost/api/v1/groups/${group.id}/cook-availability?date=2026-08-24&mealType=DINNER`,
+      { headers: { cookie: diner.cookie } },
+    );
+    const updatedMenuResponse = await app.request(
+      `http://localhost/api/v1/groups/${group.id}/menus/1/DINNER`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json", cookie: creator.cookie },
+        body: JSON.stringify({
+          items: [
+            { name: "Dal", category: "VEG" },
+            { name: "Rice", category: "VEGAN" },
+            { name: "Raita", category: "VEG" },
+            { name: "Meri Dish", category: "VEG" },
+          ],
+        }),
+      },
+    );
+    const { menu: updatedMenu } = await updatedMenuResponse.json();
+    const unmodifiedDate = await app.request(
+      `http://localhost/api/v1/groups/${group.id}/menu-overrides?date=2026-08-24`,
+      { headers: { cookie: diner.cookie } },
+    );
+    await expect(unmodifiedDate.json()).resolves.toEqual({ data: [] });
+
+    const replaced = await app.request(
+      `http://localhost/api/v1/groups/${group.id}/menu-overrides/2026-08-24/DINNER/items/${updatedMenu.items[1].id}`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json", cookie: diner.cookie },
+        body: JSON.stringify({ name: "Quinoa", category: "VEGAN" }),
+      },
+    );
+    expect(replaced.status).toBe(200);
+    await expect(replaced.json()).resolves.toMatchObject({
+      items: [
+        { name: "Dal" },
+        { name: "Quinoa" },
+        { name: "Raita" },
+        { name: "Meri Dish" },
+      ],
+    });
+
+    const weekly = await app.request(
+      `http://localhost/api/v1/groups/${group.id}/menus?weekday=1`,
+      { headers: { cookie: diner.cookie } },
+    );
+    await expect(weekly.json()).resolves.toMatchObject({
+      data: [
+        {
+          items: [
+            { name: "Dal" },
+            { name: "Rice" },
+            { name: "Raita" },
+            { name: "Meri Dish" },
+          ],
+        },
+      ],
+    });
+
+    const dated = await app.request(
+      `http://localhost/api/v1/groups/${group.id}/menu-overrides?date=2026-08-24`,
+      { headers: { cookie: diner.cookie } },
+    );
+    await expect(dated.json()).resolves.toMatchObject({
+      data: [
+        {
+          mealType: "DINNER",
+          items: [
+            { name: "Dal" },
+            { name: "Quinoa" },
+            { name: "Raita" },
+            { name: "Meri Dish" },
+          ],
+        },
+      ],
+    });
+
+    const active = await app.request(
+      `http://localhost/api/v1/groups/${group.id}/active-meal?at=2026-08-24T14:00:00Z`,
+      { headers: { cookie: diner.cookie } },
+    );
+    await expect(active.json()).resolves.toMatchObject({
+      activeMeal: {
+        date: "2026-08-24",
+        mealType: "DINNER",
+        items: [
+          { name: "Dal" },
+          { name: "Quinoa" },
+          { name: "Raita" },
+          { name: "Meri Dish" },
+        ],
+      },
+    });
+
+    const foodItems = await app.request(
+      `http://localhost/api/v1/groups/${group.id}/food-items`,
+      { headers: { cookie: diner.cookie } },
+    );
+    await expect(foodItems.json()).resolves.toMatchObject({
+      data: expect.arrayContaining([{ name: "Quinoa", category: "VEGAN" }]),
+    });
   }, 20_000);
 
   it("applies attendance precedence and restricts feedback to consumers", async () => {
@@ -594,14 +784,14 @@ describe.runIf(runIntegration)("group role management", () => {
     expect(preparation.updatedByMembershipId).toBeTruthy();
 
     const action = await app.request(
-      `http://localhost/api/v1/groups/${group.id}/action-items?date=2026-08-31&mealType=LUNCH`,
+      `http://localhost/api/v1/groups/${group.id}/action-items`,
       {
         method: "POST",
         headers: {
           "content-type": "application/json",
           cookie: producer.cookie,
         },
-        body: JSON.stringify({ text: "Buy cumin" }),
+        body: JSON.stringify({ text: "Buy cumin", dueDate: "2099-08-31" }),
       },
     );
     expect(action.status).toBe(201);

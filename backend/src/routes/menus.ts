@@ -3,7 +3,16 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { db } from "../db/client.js";
-import { groups, mealSchedules, menuItems, weeklyMenus } from "../db/schema.js";
+import { materializeMealOccurrence } from "../db/domain.js";
+import {
+  groups,
+  mealOccurrenceItems,
+  mealOccurrences,
+  mealSchedules,
+  menuItems,
+  weeklyMenus,
+} from "../db/schema.js";
+import { isCalendarDate, isoWeekday } from "../lib/attendance.js";
 import { groupLocalTime, resolveActiveSchedule } from "../lib/active-meal.js";
 import { requireGroupMembership, requireGroupRole } from "../lib/group-auth.js";
 import { readJson } from "../lib/http.js";
@@ -38,6 +47,8 @@ const menuInput = z.object({
     }),
   ),
 });
+const date = z.string().refine(isCalendarDate, "Use a valid YYYY-MM-DD date.");
+const replacementInput = menuInput.shape.items.element;
 
 function assertValidSchedule(
   entries: z.infer<typeof scheduleInput>["entries"],
@@ -137,6 +148,153 @@ menuRoutes.get("/:groupId/menus", async (context) => {
   return context.json({ data });
 });
 
+menuRoutes.get("/:groupId/food-items", async (context) => {
+  const groupId = context.req.param("groupId");
+  await requireGroupMembership(context, groupId);
+  const [templateItems, datedItems] = await Promise.all([
+    db
+      .select({
+        id: menuItems.id,
+        name: menuItems.name,
+        category: menuItems.category,
+        recipeUrl: menuItems.recipeUrl,
+        notes: menuItems.notes,
+      })
+      .from(menuItems)
+      .innerJoin(weeklyMenus, eq(menuItems.menuId, weeklyMenus.id))
+      .where(eq(weeklyMenus.groupId, groupId)),
+    db
+      .select({
+        id: mealOccurrenceItems.id,
+        name: mealOccurrenceItems.name,
+        category: mealOccurrenceItems.category,
+        recipeUrl: mealOccurrenceItems.recipeUrl,
+      })
+      .from(mealOccurrenceItems)
+      .innerJoin(
+        mealOccurrences,
+        eq(mealOccurrenceItems.occurrenceId, mealOccurrences.id),
+      )
+      .where(
+        and(
+          eq(mealOccurrences.groupId, groupId),
+          eq(mealOccurrences.isMenuOverridden, true),
+        ),
+      ),
+  ]);
+  const items = new Map(
+    [
+      ...templateItems,
+      ...datedItems.map((item) => ({ ...item, notes: null })),
+    ].map((item) => [
+      `${item.category}:${item.name.trim().toLocaleLowerCase()}`,
+      item,
+    ]),
+  );
+  return context.json({ data: [...items.values()] });
+});
+
+menuRoutes.get("/:groupId/menu-overrides", async (context) => {
+  const groupId = context.req.param("groupId");
+  await requireGroupMembership(context, groupId);
+  const mealDate = date.safeParse(context.req.query("date"));
+  if (!mealDate.success) {
+    throw new HTTPException(400, { message: "Invalid date." });
+  }
+  const occurrences = await db
+    .select({ id: mealOccurrences.id, mealType: mealOccurrences.mealType })
+    .from(mealOccurrences)
+    .where(
+      and(
+        eq(mealOccurrences.groupId, groupId),
+        eq(mealOccurrences.mealDate, mealDate.data),
+        eq(mealOccurrences.isMenuOverridden, true),
+      ),
+    );
+  const data = await Promise.all(
+    occurrences.map(async (occurrence) => ({
+      mealType: occurrence.mealType,
+      items: await db
+        .select({
+          id: mealOccurrenceItems.id,
+          name: mealOccurrenceItems.name,
+          category: mealOccurrenceItems.category,
+          recipeUrl: mealOccurrenceItems.recipeUrl,
+        })
+        .from(mealOccurrenceItems)
+        .where(eq(mealOccurrenceItems.occurrenceId, occurrence.id))
+        .orderBy(asc(mealOccurrenceItems.sortOrder)),
+    })),
+  );
+  return context.json({ data });
+});
+
+menuRoutes.put(
+  "/:groupId/menu-overrides/:date/:mealType/items/:itemId",
+  async (context) => {
+    const groupId = context.req.param("groupId");
+    await requireGroupRole(context, groupId, ["CONSUMER"]);
+    const mealDate = date.safeParse(context.req.param("date"));
+    const mealType = z.enum(mealTypes).safeParse(context.req.param("mealType"));
+    const itemId = z.string().uuid().safeParse(context.req.param("itemId"));
+    if (!mealDate.success || !mealType.success || !itemId.success) {
+      throw new HTTPException(400, {
+        message: "Invalid date, meal type, or dish.",
+      });
+    }
+    const payload = await readJson(context.req.raw, replacementInput);
+    const result = await db.transaction(async (tx) => {
+      const { occurrence, items } = await materializeMealOccurrence(tx, {
+        groupId,
+        mealDate: mealDate.data,
+        mealType: mealType.data,
+        weekday: isoWeekday(mealDate.data),
+      });
+      const item = items.find(
+        (candidate) =>
+          candidate.id === itemId.data ||
+          candidate.sourceMenuItemId === itemId.data,
+      );
+      if (!item) {
+        throw new HTTPException(404, {
+          message: "The selected dish is not part of this meal.",
+        });
+      }
+      const [replacement] = await tx
+        .update(mealOccurrenceItems)
+        .set({
+          sourceMenuItemId: null,
+          name: payload.name,
+          category: payload.category,
+          recipeUrl: payload.recipeUrl ?? null,
+        })
+        .where(
+          and(
+            eq(mealOccurrenceItems.id, item.id),
+            eq(mealOccurrenceItems.occurrenceId, occurrence.id),
+          ),
+        )
+        .returning();
+      await tx
+        .update(mealOccurrences)
+        .set({ isMenuOverridden: true })
+        .where(eq(mealOccurrences.id, occurrence.id));
+      const updatedItems = await tx
+        .select({
+          id: mealOccurrenceItems.id,
+          name: mealOccurrenceItems.name,
+          category: mealOccurrenceItems.category,
+          recipeUrl: mealOccurrenceItems.recipeUrl,
+        })
+        .from(mealOccurrenceItems)
+        .where(eq(mealOccurrenceItems.occurrenceId, occurrence.id))
+        .orderBy(asc(mealOccurrenceItems.sortOrder));
+      return { replacement, items: updatedItems };
+    });
+    return context.json(result);
+  },
+);
+
 menuRoutes.put("/:groupId/menus/:weekday/:mealType", async (context) => {
   const groupId = context.req.param("groupId");
   await requireGroupRole(context, groupId, ["ADMIN"]);
@@ -221,13 +379,31 @@ menuRoutes.get("/:groupId/active-meal", async (context) => {
       ),
     )
     .limit(1);
-  const items = menu
+  const [occurrence] = await db
+    .select({ id: mealOccurrences.id })
+    .from(mealOccurrences)
+    .where(
+      and(
+        eq(mealOccurrences.groupId, groupId),
+        eq(mealOccurrences.mealDate, local.date),
+        eq(mealOccurrences.mealType, schedule.mealType),
+        eq(mealOccurrences.isMenuOverridden, true),
+      ),
+    )
+    .limit(1);
+  const items = occurrence
     ? await db
         .select()
-        .from(menuItems)
-        .where(eq(menuItems.menuId, menu.id))
-        .orderBy(asc(menuItems.sortOrder))
-    : [];
+        .from(mealOccurrenceItems)
+        .where(eq(mealOccurrenceItems.occurrenceId, occurrence.id))
+        .orderBy(asc(mealOccurrenceItems.sortOrder))
+    : menu
+      ? await db
+          .select()
+          .from(menuItems)
+          .where(eq(menuItems.menuId, menu.id))
+          .orderBy(asc(menuItems.sortOrder))
+      : [];
   return context.json({
     activeMeal: {
       date: local.date,

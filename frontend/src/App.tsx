@@ -8,9 +8,12 @@ import {
 import "./App.css";
 import "./styles/admin.css";
 import { CookWorkspace } from "./components/CookWorkspace";
+import { AttendanceIcon } from "./components/AttendanceIcon";
 import { DinerActionItems } from "./components/DinerActionItems";
+import { DinerOnboarding } from "./components/DinerOnboarding";
 import { DinerWorkspace } from "./components/DinerWorkspace";
 import { GroupJoinQr } from "./components/GroupJoinQr";
+import { LeaveGroupButton } from "./components/LeaveGroupButton";
 import { QrJoinScanner } from "./components/QrJoinScanner";
 import { api } from "./lib/api";
 import {
@@ -51,6 +54,15 @@ type CookLeaveRange = {
   reason: string | null;
 };
 
+type DailyMenuOverride = {
+  mealType: string;
+  items: WeeklyMenu["items"];
+};
+
+const foodCategoryOrder = ["VEGAN", "VEG", "EGG", "NON_VEG"];
+const foodCategoryName = (category: string) =>
+  category === "NON_VEG" ? "Non-veg" : mealName(category);
+
 export default function App() {
   const [path, setPath] = useState(() => window.location.pathname);
   const [user, setUser] = useState<User | null>(null);
@@ -64,6 +76,7 @@ export default function App() {
   );
   const [busy, setBusy] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
+  const [showAuthLoader, setShowAuthLoader] = useState(false);
   const [activeMeal, setActiveMeal] = useState<ActiveMeal | null | undefined>(
     undefined,
   );
@@ -72,6 +85,10 @@ export default function App() {
   const [joinRequestStatus, setJoinRequestStatus] = useState("ALL");
   const [members, setMembers] = useState<Member[]>([]);
   const [menus, setMenus] = useState<WeeklyMenu[]>([]);
+  const [savedFoodItems, setSavedFoodItems] = useState<WeeklyMenu["items"]>([]);
+  const [dailyMenuItems, setDailyMenuItems] = useState<
+    Record<string, WeeklyMenu["items"]>
+  >({});
   const [recurringAbsences, setRecurringAbsences] = useState<
     {
       weekday: number;
@@ -85,6 +102,15 @@ export default function App() {
   >(null);
   const [dateUnavailable, setDateUnavailable] = useState<string[]>([]);
   const [dateAvailable, setDateAvailable] = useState<string[]>([]);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [onboardingRequired, setOnboardingRequired] = useState(false);
+  const [recurringItemAbsences, setRecurringItemAbsences] = useState<string[]>(
+    [],
+  );
+  const [dietaryCategories, setDietaryCategories] = useState<string[]>([]);
+  const [itemAttendance, setItemAttendance] = useState<
+    Record<string, "PRESENT" | "ABSENT">
+  >({});
   const [cookLeaves, setCookLeaves] = useState<CookLeave[]>([]);
   const [cookCount, setCookCount] = useState(0);
   const [vacations, setVacations] = useState<Vacation[]>([]);
@@ -96,6 +122,15 @@ export default function App() {
   const [editorMealType, setEditorMealType] = useState("BREAKFAST");
   const [editingFoodIndex, setEditingFoodIndex] = useState<number | null>(null);
   const [foodSearch, setFoodSearch] = useState("");
+  const [replacementDialogOpen, setReplacementDialogOpen] = useState(false);
+  const [replacementMealType, setReplacementMealType] = useState("");
+  const [replacementItem, setReplacementItem] = useState<
+    WeeklyMenu["items"][number] | null
+  >(null);
+  const [replacementName, setReplacementName] = useState("");
+  const [replacementCategory, setReplacementCategory] = useState("VEGAN");
+  const [replacementRecipeUrl, setReplacementRecipeUrl] = useState("");
+  const [replacementSavedFoodId, setReplacementSavedFoodId] = useState("");
   const [saveAndContinue, setSaveAndContinue] = useState(false);
   const [groupName, setGroupName] = useState("");
   const [joinGroupSlug, setJoinGroupSlug] = useState("");
@@ -107,26 +142,39 @@ export default function App() {
     () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
   );
   const loadMenuWorkspace = async (selectedGroup: Group) => {
-    const [menuData, cookLeaveData] = await Promise.all([
+    const [menuData, cookLeaveData, foodData] = await Promise.all([
       api<{ data: WeeklyMenu[] }>(`/groups/${selectedGroup.id}/menus`),
       api<{ cookCount: number; leaves: CookLeave[] }>(
         `/groups/${selectedGroup.id}/cook-leaves`,
       ),
+      api<{ data: WeeklyMenu["items"] }>(
+        `/groups/${selectedGroup.id}/food-items`,
+      ),
     ]);
     setMenus(menuData.data);
+    setSavedFoodItems(foodData.data);
     setCookLeaves(cookLeaveData.leaves);
     setCookCount(cookLeaveData.cookCount);
     if (selectedGroup.roles?.includes("CONSUMER")) {
-      const [availability, vacationData] = await Promise.all([
+      const [availability, vacationData, onboarding] = await Promise.all([
         api<{ rules: { weekday: number; mealType: string }[] }>(
           `/groups/${selectedGroup.id}/my/recurring-absences`,
         ),
         api<{ vacations: Vacation[] }>(
           `/groups/${selectedGroup.id}/my/vacations`,
         ),
+        api<{
+          completed: boolean;
+          absentMenuItemIds: string[];
+          dietaryCategories: string[];
+        }>(`/groups/${selectedGroup.id}/my/onboarding`),
       ]);
       setRecurringAbsences(availability.rules);
       setVacations(vacationData.vacations);
+      setRecurringItemAbsences(onboarding.absentMenuItemIds);
+      setDietaryCategories(onboarding.dietaryCategories);
+      setOnboardingRequired(!onboarding.completed);
+      setOnboardingOpen(!onboarding.completed);
     }
   };
   const loadDateAttendance = async (selectedGroup: Group, date: Date) => {
@@ -174,6 +222,11 @@ export default function App() {
       .finally(() => setAuthLoading(false));
   }, []);
   useEffect(() => {
+    if (!authLoading) return;
+    const timeout = window.setTimeout(() => setShowAuthLoader(true), 300);
+    return () => window.clearTimeout(timeout);
+  }, [authLoading]);
+  useEffect(() => {
     const onPopState = () => setPath(window.location.pathname);
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -209,13 +262,49 @@ export default function App() {
     if (!group?.id || !group.roles?.includes("CONSUMER")) {
       setDateUnavailable([]);
       setDateAvailable([]);
+      setDailyMenuItems({});
+      setItemAttendance({});
       return;
     }
     setDateUnavailable([]);
     setDateAvailable([]);
-    void loadDateAttendance(group, menuDate).catch(() => {
+    setDailyMenuItems({});
+    void Promise.all([
+      loadDateAttendance(group, menuDate),
+      api<{ data: DailyMenuOverride[] }>(
+        `/groups/${group.id}/menu-overrides?date=${dateValue(menuDate)}`,
+      ).then(({ data }) =>
+        setDailyMenuItems(
+          Object.fromEntries(
+            data.map((entry) => [entry.mealType, entry.items]),
+          ),
+        ),
+      ),
+      api<{
+        recurringAbsentItemIds: string[];
+        overrides: {
+          itemId: string;
+          mealType: string;
+          attendance: "PRESENT" | "ABSENT";
+        }[];
+      }>(
+        `/groups/${group.id}/my/item-attendance?date=${dateValue(menuDate)}`,
+      ).then(({ recurringAbsentItemIds, overrides }) => {
+        setRecurringItemAbsences(recurringAbsentItemIds);
+        setItemAttendance(
+          Object.fromEntries(
+            overrides.map((override) => [
+              `${override.mealType}:${override.itemId}`,
+              override.attendance,
+            ]),
+          ),
+        );
+      }),
+    ]).catch(() => {
       setDateUnavailable([]);
       setDateAvailable([]);
+      setDailyMenuItems({});
+      setItemAttendance({});
     });
   }, [group, menuDate]);
   useEffect(() => {
@@ -320,6 +409,18 @@ export default function App() {
       setActiveMeal(undefined);
       await loadMenuWorkspace(selectedGroup);
     });
+  const leaveGroup = () => {
+    if (!group || !window.confirm(`Leave ${group.name}?`)) return;
+    void run(async () => {
+      await api(`/groups/${group.id}/my-membership`, { method: "DELETE" });
+      await loadMyGroups();
+      window.history.pushState({}, "", "/");
+      setPath("/");
+      setGroup(null);
+      setMenus([]);
+      setMessage(`You left ${group.name}.`);
+    });
+  };
   const isAdmin = group?.roles?.includes("ADMIN") ?? false;
   const isConsumer = group?.roles?.includes("CONSUMER") ?? false;
   const isProducer = group?.roles?.includes("PRODUCER") ?? false;
@@ -362,9 +463,27 @@ export default function App() {
   }, [cookLeaves]);
   const editingFood =
     editingFoodIndex === null ? null : (draftItems[editingFoodIndex] ?? null);
+  const sortedSavedFoodItems = useMemo(() => {
+    const unique = new Map(
+      savedFoodItems.map((item) => [
+        `${item.category}:${item.name.trim().toLocaleLowerCase()}`,
+        item,
+      ]),
+    );
+    return [...unique.values()].sort(
+      (left, right) =>
+        foodCategoryOrder.indexOf(left.category) -
+          foodCategoryOrder.indexOf(right.category) ||
+        left.name.localeCompare(right.name, undefined, { sensitivity: "base" }),
+    );
+  }, [savedFoodItems]);
   const selectedWeekday = ((menuDate.getDay() + 6) % 7) + 1;
   const visibleMenus = menus
     .filter((menu) => menu.weekday === selectedWeekday && menu.items.length)
+    .map((menu) => ({
+      ...menu,
+      items: dailyMenuItems[menu.mealType] ?? menu.items,
+    }))
     .sort(
       (left, right) => mealIndex(left.mealType) - mealIndex(right.mealType),
     );
@@ -389,7 +508,15 @@ export default function App() {
         (rule) =>
           rule.weekday === selectedWeekday && rule.mealType === mealType,
       ));
-  const loadCreatorTools = () =>
+  const isItemPresent = (mealType: string, itemId: string) => {
+    if (isMealUnavailable(mealType)) return false;
+    const override = itemAttendance[`${mealType}:${itemId}`];
+    return (
+      override === "PRESENT" ||
+      (override !== "ABSENT" && !recurringItemAbsences.includes(itemId))
+    );
+  };
+  const loadCreatorTools = useCallback(() => {
     void run(async () => {
       if (!group?.id) return;
       const [requestData, memberData] = await Promise.all([
@@ -399,6 +526,7 @@ export default function App() {
       setRequests(requestData.data);
       setMembers(memberData.data);
     });
+  }, [group, run]);
   const review = (requestId: string, action: "approve" | "reject") =>
     void run(async () => {
       if (!group) return;
@@ -416,6 +544,26 @@ export default function App() {
       });
       await loadCreatorTools();
     });
+  const removeMember = (member: Member) =>
+    void run(async () => {
+      if (!group) return;
+      await api(`/groups/${group.id}/members/${member.membershipId}`, {
+        method: "DELETE",
+      });
+      await loadCreatorTools();
+    });
+  useEffect(() => {
+    if (!group?.id || !isAdmin) return;
+    void Promise.all([
+      api<{ data: JoinRequest[] }>(`/groups/${group.id}/join-requests`),
+      api<{ data: Member[] }>(`/groups/${group.id}/members`),
+    ])
+      .then(([requestData, memberData]) => {
+        setRequests(requestData.data);
+        setMembers(memberData.data);
+      })
+      .catch(() => undefined);
+  }, [group?.id, isAdmin]);
   const saveMenu = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -446,12 +594,44 @@ export default function App() {
         ),
         result.menu,
       ]);
+      const foodData = await api<{ data: WeeklyMenu["items"] }>(
+        `/groups/${group.id}/food-items`,
+      );
+      setSavedFoodItems(foodData.data);
       setActiveMeal(undefined);
       setDraftItems([]);
       setFoodSearch("");
       if (!saveAndContinue) setMenuEditorOpen(false);
       setSaveAndContinue(false);
       setMessage("Menu saved.");
+    });
+  };
+  const replaceMealItem = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void run(async () => {
+      if (!group || !replacementItem || !replacementMealType) return;
+      const result = await api<{
+        replacement: WeeklyMenu["items"][number];
+        items: WeeklyMenu["items"];
+      }>(
+        `/groups/${group.id}/menu-overrides/${dateValue(menuDate)}/${replacementMealType}/items/${replacementItem.id}`,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            name: replacementName,
+            category: replacementCategory,
+            recipeUrl: replacementRecipeUrl || null,
+          }),
+        },
+      );
+      setDailyMenuItems((current) => ({
+        ...current,
+        [replacementMealType]: result.items,
+      }));
+      setSavedFoodItems((current) => [...current, result.replacement]);
+      setReplacementDialogOpen(false);
+      setReplacementItem(null);
+      setMessage("Dish changed for this date only.");
     });
   };
   const markMealUnavailable = (mealType: string) =>
@@ -483,6 +663,22 @@ export default function App() {
       setDateUnavailable((current) =>
         current.filter((item) => item !== `${date}:${mealType}`),
       );
+    });
+  const setItemPresent = (mealType: string, itemId: string, present: boolean) =>
+    void run(async () => {
+      if (!group) return;
+      const attendance = present ? "PRESENT" : "ABSENT";
+      await api(
+        `/groups/${group.id}/my/item-attendance/${dateValue(menuDate)}/${mealType}/${itemId}`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ attendance }),
+        },
+      );
+      setItemAttendance((current) => ({
+        ...current,
+        [`${mealType}:${itemId}`]: attendance,
+      }));
     });
   const markVacation = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -559,7 +755,8 @@ export default function App() {
     <main>
       <nav className="nav">
         <a className="brand" href="/">
-          Meal<span>Flow</span>
+          <img className="brand-icon" src="/favicon.svg" alt="" />
+          Cook<span>DuKoo</span>
         </a>
         {user && (
           <div className="nav-actions">
@@ -659,9 +856,11 @@ export default function App() {
       {!isGroupPage && (
         <section className="workspace">
           {authLoading ? (
-            <div className="panel">
-              <p className="empty">Restoring your session…</p>
-            </div>
+            showAuthLoader ? (
+              <div className="panel">
+                <p className="empty">Connecting…</p>
+              </div>
+            ) : null
           ) : !user ? (
             <div className="panel auth-card">
               <div
@@ -982,7 +1181,21 @@ export default function App() {
           <p className="eyebrow">{group.timezone}</p>
           <div className="group-title-row">
             <h1>{group.name}</h1>
-            <GroupJoinQr group={group} />
+            <div className="group-title-actions">
+              {isConsumer && (
+                <button
+                  className="secondary tour-button"
+                  onClick={() => {
+                    setOnboardingRequired(false);
+                    setOnboardingOpen(true);
+                  }}
+                >
+                  Start diner tour
+                </button>
+              )}
+              <GroupJoinQr group={group} />
+              <LeaveGroupButton busy={busy} onLeave={leaveGroup} />
+            </div>
           </div>
           <div className="day-switcher" aria-label="Choose menu day">
             <button
@@ -1023,26 +1236,29 @@ export default function App() {
                   {cookUnavailableMeals.includes(menu.mealType) && (
                     <p className="unavailable-marker">👨‍🍳 Cook unavailable</p>
                   )}
-                  {isMealUnavailable(menu.mealType) ? (
-                    <>
-                      <p className="unavailable-marker">Not available</p>
-                      <button
-                        className="secondary"
-                        onClick={() => markMealAvailable(menu.mealType)}
-                        disabled={busy}
-                      >
-                        Available this day
-                      </button>
-                    </>
-                  ) : isConsumer ? (
+                  {isConsumer && (
                     <button
-                      className="secondary"
-                      onClick={() => markMealUnavailable(menu.mealType)}
+                      className={`attendance-toggle meal-attendance-toggle${isMealUnavailable(menu.mealType) ? "" : " is-present"}`}
+                      aria-pressed={!isMealUnavailable(menu.mealType)}
+                      aria-label={`${mealName(menu.mealType)}: ${isMealUnavailable(menu.mealType) ? "absent" : "present"}`}
+                      title={
+                        isMealUnavailable(menu.mealType)
+                          ? "Absent — select to mark present"
+                          : "Present — select to mark absent"
+                      }
+                      onClick={() =>
+                        isMealUnavailable(menu.mealType)
+                          ? markMealAvailable(menu.mealType)
+                          : markMealUnavailable(menu.mealType)
+                      }
                       disabled={busy}
                     >
-                      Not available
+                      <AttendanceIcon
+                        present={!isMealUnavailable(menu.mealType)}
+                      />
+                      {isMealUnavailable(menu.mealType) ? "Absent" : "Present"}
                     </button>
-                  ) : null}
+                  )}
                   <ul>
                     {menu.items.map((item) => (
                       <li key={item.id}>
@@ -1057,7 +1273,58 @@ export default function App() {
                         ) : (
                           item.name
                         )}
-                        <span>{mealName(item.category)}</span>
+                        <div className="dish-actions">
+                          <span>{foodCategoryName(item.category)}</span>
+                          {isConsumer && (
+                            <>
+                              <button
+                                type="button"
+                                className={`attendance-toggle item-attendance-toggle${isItemPresent(menu.mealType, item.id) ? " is-present" : ""}`}
+                                aria-pressed={isItemPresent(
+                                  menu.mealType,
+                                  item.id,
+                                )}
+                                aria-label={`${item.name}: ${isItemPresent(menu.mealType, item.id) ? "present" : "absent"}`}
+                                title={
+                                  isItemPresent(menu.mealType, item.id)
+                                    ? "Included — select to skip this dish"
+                                    : "Skipped — select to join this dish"
+                                }
+                                onClick={() =>
+                                  setItemPresent(
+                                    menu.mealType,
+                                    item.id,
+                                    !isItemPresent(menu.mealType, item.id),
+                                  )
+                                }
+                                disabled={
+                                  busy || isMealUnavailable(menu.mealType)
+                                }
+                              >
+                                <AttendanceIcon
+                                  present={isItemPresent(
+                                    menu.mealType,
+                                    item.id,
+                                  )}
+                                />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setReplacementMealType(menu.mealType);
+                                  setReplacementItem(item);
+                                  setReplacementName("");
+                                  setReplacementCategory("VEGAN");
+                                  setReplacementRecipeUrl("");
+                                  setReplacementSavedFoodId("");
+                                  setReplacementDialogOpen(true);
+                                }}
+                              >
+                                Change
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </li>
                     ))}
                   </ul>
@@ -1104,42 +1371,115 @@ export default function App() {
               ))}
             </div>
           )}
-          <section className="panel cook-leave-schedule">
-            <h2>Cook leave schedule</h2>
-            {cookLeaveRanges.length ? (
-              cookLeaveRanges.map((leave) => (
-                <p
-                  className="list-row"
-                  key={`${leave.membershipId}-${leave.start}-${leave.startMeal}-${leave.end}-${leave.endMeal}`}
-                >
-                  <span>
-                    👨‍🍳 {leave.start} · {mealName(leave.startMeal)} – {leave.end}{" "}
-                    · {mealName(leave.endMeal)}
-                    {leave.reason ? ` · ${leave.reason}` : ""}
-                  </span>
-                </p>
-              ))
-            ) : (
-              <p className="empty">No cook leave ranges are recorded.</p>
-            )}
-          </section>
         </section>
-      )}
-      {isGroupPage && user && group?.id && group.roles && isConsumer && (
-        <DinerActionItems
-          busy={busy}
-          group={group}
-          menuDate={menuDate}
-          menus={menus}
-          currentUserName={user.displayName}
-          run={run}
-          onMessage={setMessage}
-        />
       )}
       {isGroupPage && user && group?.id && group.roles && isAdmin && (
         <button className="menu-add" onClick={() => setMenuEditorOpen(true)}>
-          +
+          + Menu
         </button>
+      )}
+      {replacementDialogOpen && isConsumer && replacementItem && (
+        <div className="dialog-backdrop" role="presentation">
+          <section
+            className="panel food-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="replacement-dialog-title"
+          >
+            <button
+              className="dialog-close"
+              aria-label="Close dish replacement"
+              onClick={() => setReplacementDialogOpen(false)}
+            >
+              ×
+            </button>
+            <h2 id="replacement-dialog-title">Change {replacementItem.name}</h2>
+            <p className="field-help">
+              This changes {mealName(replacementMealType)} on{" "}
+              {formatDate(menuDate)}
+              only.
+            </p>
+            <form onSubmit={replaceMealItem}>
+              <label>
+                Saved food item
+                <select
+                  value={replacementSavedFoodId}
+                  onChange={(event) => {
+                    const selected = sortedSavedFoodItems.find(
+                      (item) => item.id === event.target.value,
+                    );
+                    setReplacementSavedFoodId(event.target.value);
+                    if (!selected) return;
+                    setReplacementName(selected.name);
+                    setReplacementCategory(selected.category);
+                    setReplacementRecipeUrl(selected.recipeUrl ?? "");
+                  }}
+                >
+                  <option value="">Enter a new dish</option>
+                  {foodCategoryOrder.map((category) => (
+                    <optgroup key={category} label={foodCategoryName(category)}>
+                      {sortedSavedFoodItems
+                        .filter((item) => item.category === category)
+                        .map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.name}
+                          </option>
+                        ))}
+                    </optgroup>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Dish name
+                <input
+                  value={replacementName}
+                  onChange={(event) => {
+                    setReplacementName(event.target.value);
+                    setReplacementSavedFoodId("");
+                  }}
+                  required
+                />
+              </label>
+              <label>
+                Category
+                <select
+                  value={replacementCategory}
+                  onChange={(event) =>
+                    setReplacementCategory(event.target.value)
+                  }
+                >
+                  {foodCategoryOrder.map((category) => (
+                    <option key={category} value={category}>
+                      {foodCategoryName(category)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Recipe link
+                <input
+                  type="url"
+                  value={replacementRecipeUrl}
+                  onChange={(event) =>
+                    setReplacementRecipeUrl(event.target.value)
+                  }
+                />
+              </label>
+              <div className="dialog-actions">
+                <button className="primary" disabled={busy}>
+                  Change dish
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => setReplacementDialogOpen(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
       )}
       {menuEditorOpen && isAdmin && (
         <div className="dialog-backdrop" role="presentation">
@@ -1216,30 +1556,31 @@ export default function App() {
               </div>
               <label>
                 Saved food items
-                <input
-                  list="saved-food-items"
-                  placeholder="Type to search food items"
+                <select
                   value={foodSearch}
                   onChange={(event) => setFoodSearch(event.target.value)}
-                />
-                <datalist id="saved-food-items">
-                  {menus
-                    .flatMap((menu) => menu.items)
-                    .map((item) => (
-                      <option
-                        key={item.id}
-                        value={`${item.name} — ${item.category}`}
-                      />
-                    ))}
-                </datalist>
+                >
+                  <option value="">Choose a food item</option>
+                  {foodCategoryOrder.map((category) => (
+                    <optgroup key={category} label={foodCategoryName(category)}>
+                      {sortedSavedFoodItems
+                        .filter((item) => item.category === category)
+                        .map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.name}
+                          </option>
+                        ))}
+                    </optgroup>
+                  ))}
+                </select>
               </label>
               <button
                 type="button"
                 className="secondary"
                 onClick={() => {
-                  const item = menus
-                    .flatMap((menu) => menu.items)
-                    .find((candidate) => foodSearch.startsWith(candidate.name));
+                  const item = sortedSavedFoodItems.find(
+                    (candidate) => candidate.id === foodSearch,
+                  );
                   if (!item) return;
                   setDraftItems((current) => [
                     ...current,
@@ -1327,10 +1668,11 @@ export default function App() {
                   name="category"
                   defaultValue={editingFood?.category ?? "VEG"}
                 >
-                  <option>VEG</option>
-                  <option>NON_VEG</option>
-                  <option>EGG</option>
-                  <option>VEGAN</option>
+                  {foodCategoryOrder.map((category) => (
+                    <option key={category} value={category}>
+                      {foodCategoryName(category)}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label>
@@ -1361,6 +1703,84 @@ export default function App() {
           </section>
         </div>
       )}
+      {isGroupPage &&
+        user &&
+        group?.id &&
+        group.roles &&
+        isConsumer &&
+        onboardingOpen && (
+          <DinerOnboarding
+            busy={busy}
+            initialAbsentItemIds={recurringItemAbsences}
+            initialDietaryCategories={dietaryCategories}
+            menus={menus}
+            required={onboardingRequired}
+            onClose={() => {
+              setOnboardingOpen(false);
+              setOnboardingRequired(false);
+            }}
+            onSave={async (absentMenuItemIds, selectedDietaryCategories) => {
+              let saved = false;
+              await run(async () => {
+                await api(`/groups/${group.id}/my/onboarding`, {
+                  method: "PUT",
+                  body: JSON.stringify({
+                    absentMenuItemIds,
+                    dietaryCategories: selectedDietaryCategories,
+                  }),
+                });
+                setRecurringItemAbsences(absentMenuItemIds);
+                setDietaryCategories(selectedDietaryCategories);
+                setOnboardingRequired(false);
+                setMessage("Diner attendance preferences saved.");
+                saved = true;
+              });
+              return saved;
+            }}
+          />
+        )}
+      {isGroupPage &&
+        user &&
+        group?.id &&
+        group.roles &&
+        isConsumer &&
+        !isProducer && (
+          <DinerActionItems
+            busy={busy}
+            group={group}
+            currentUserName={user.displayName}
+            run={run}
+            onMessage={setMessage}
+          />
+        )}
+      {isGroupPage &&
+        user &&
+        group?.id &&
+        group.roles &&
+        isConsumer &&
+        !isProducer && (
+          <section className="cook-leave-wrapper">
+            <div className="panel cook-leave-schedule">
+              <h2>Cook leave schedule</h2>
+              {cookLeaveRanges.length ? (
+                cookLeaveRanges.map((leave) => (
+                  <p
+                    className="list-row"
+                    key={`${leave.membershipId}-${leave.start}-${leave.startMeal}-${leave.end}-${leave.endMeal}`}
+                  >
+                    <span>
+                      👨‍🍳 {leave.start} · {mealName(leave.startMeal)} –{" "}
+                      {leave.end} · {mealName(leave.endMeal)}
+                      {leave.reason ? ` · ${leave.reason}` : ""}
+                    </span>
+                  </p>
+                ))
+              ) : (
+                <p className="empty">No cook leave ranges are recorded.</p>
+              )}
+            </div>
+          </section>
+        )}
       {isGroupPage && user && group?.id && group.roles && isConsumer && (
         <DinerWorkspace
           busy={busy}
@@ -1416,7 +1836,7 @@ export default function App() {
       )}
       {isGroupPage && user && group?.id && group.roles && isAdmin && (
         <section className="member-management">
-          <h2>Members management</h2>
+          <h2>Members</h2>
           <div className="member-management-grid">
             <section className="panel">
               <h2>Invite management</h2>
@@ -1448,25 +1868,52 @@ export default function App() {
               )}
             </section>
             <section className="panel">
-              <h2>Member roles</h2>
+              <h2>Members</h2>
               {members.length === 0 ? (
-                <p className="empty">Load members to manage roles.</p>
+                <p className="empty">No active members.</p>
               ) : (
-                members.map((member) => (
-                  <div className="list-row" key={member.membershipId}>
-                    <span>
-                      <strong>{member.displayName}</strong>
-                      <br />
-                      {member.roles.map(roleName).join(", ")}
-                    </span>
-                    {member.roles.includes("ADMIN") ? (
-                      <button onClick={() => setAdmin(member, false)}>
-                        Remove admin
-                      </button>
+                [
+                  {
+                    title: "Cooks",
+                    members: members.filter((member) =>
+                      member.roles.includes("PRODUCER"),
+                    ),
+                  },
+                  {
+                    title: "Diners",
+                    members: members.filter((member) =>
+                      member.roles.includes("CONSUMER"),
+                    ),
+                  },
+                ].map(({ title, members: roleMembers }) => (
+                  <div className="member-role-group" key={title}>
+                    <h3>{title}</h3>
+                    {roleMembers.length === 0 ? (
+                      <p className="empty">
+                        No {String(title).toLowerCase()} yet.
+                      </p>
                     ) : (
-                      <button onClick={() => setAdmin(member, true)}>
-                        Make admin
-                      </button>
+                      roleMembers.map((member) => (
+                        <div className="list-row" key={member.membershipId}>
+                          <span>
+                            <strong>{member.displayName}</strong>
+                            <br />
+                            {member.roles.map(roleName).join(", ")}
+                          </span>
+                          {member.roles.includes("ADMIN") ? (
+                            <button onClick={() => setAdmin(member, false)}>
+                              Remove admin
+                            </button>
+                          ) : (
+                            <button onClick={() => setAdmin(member, true)}>
+                              Make admin
+                            </button>
+                          )}
+                          <button onClick={() => removeMember(member)}>
+                            Remove member
+                          </button>
+                        </div>
+                      ))
                     )}
                   </div>
                 ))
@@ -1483,6 +1930,7 @@ export default function App() {
           currentUserName={user.displayName}
           run={run}
           onMessage={setMessage}
+          onLeave={leaveGroup}
           onBack={() => {
             window.history.pushState({}, "", "/");
             setPath("/");

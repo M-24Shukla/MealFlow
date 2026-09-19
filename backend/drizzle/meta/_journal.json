@@ -64,6 +64,41 @@
       "when": 1788283727000,
       "tag": "0008_action_item_completion",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789344000000,
+      "tag": "0009_dated_menu_overrides",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1789660800000,
+      "tag": "0010_diner_onboarding",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1789664400000,
+      "tag": "0011_group_action_items",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1789750800000,
+      "tag": "0012_diner_dietary_preferences",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1789754400000,
+      "tag": "0013_cook_onboarding",
+      "breakpoints": true
     }
   ]
 }

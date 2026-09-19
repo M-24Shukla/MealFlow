@@ -114,6 +114,12 @@ export const memberships = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     status: membershipStatus("status").default("ACTIVE").notNull(),
+    dinerOnboardingCompletedAt: timestamp("diner_onboarding_completed_at", {
+      withTimezone: true,
+    }),
+    cookOnboardingCompletedAt: timestamp("cook_onboarding_completed_at", {
+      withTimezone: true,
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -318,6 +324,63 @@ export const attendanceOverrides = pgTable(
   ],
 );
 
+export const dinerMenuItemAbsences = pgTable(
+  "diner_menu_item_absences",
+  {
+    membershipId: uuid("membership_id")
+      .notNull()
+      .references(() => memberships.id, { onDelete: "cascade" }),
+    menuItemId: uuid("menu_item_id")
+      .notNull()
+      .references(() => menuItems.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.membershipId, table.menuItemId] })],
+);
+
+export const dinerDietaryPreferences = pgTable(
+  "diner_dietary_preferences",
+  {
+    membershipId: uuid("membership_id")
+      .notNull()
+      .references(() => memberships.id, { onDelete: "cascade" }),
+    category: foodCategory("category").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.membershipId, table.category] })],
+);
+
+export const dinerItemAttendanceOverrides = pgTable(
+  "diner_item_attendance_overrides",
+  {
+    membershipId: uuid("membership_id")
+      .notNull()
+      .references(() => memberships.id, { onDelete: "cascade" }),
+    mealDate: date("meal_date").notNull(),
+    mealType: mealType("meal_type").notNull(),
+    itemId: uuid("item_id").notNull(),
+    attendance: attendanceStatus("attendance").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.membershipId,
+        table.mealDate,
+        table.mealType,
+        table.itemId,
+      ],
+    }),
+    index("diner_item_attendance_date_meal_idx").on(
+      table.mealDate,
+      table.mealType,
+    ),
+  ],
+);
+
 export const vacations = pgTable(
   "vacations",
   {
@@ -403,6 +466,7 @@ export const mealOccurrences = pgTable(
     weeklyMenuId: uuid("weekly_menu_id").references(() => weeklyMenus.id, {
       onDelete: "set null",
     }),
+    isMenuOverridden: boolean("is_menu_overridden").default(false).notNull(),
     materializedAt: timestamp("materialized_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -490,10 +554,14 @@ export const actionItems = pgTable(
   "action_items",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    occurrenceId: uuid("occurrence_id")
+    groupId: uuid("group_id")
       .notNull()
-      .references(() => mealOccurrences.id, { onDelete: "cascade" }),
+      .references(() => groups.id, { onDelete: "cascade" }),
+    occurrenceId: uuid("occurrence_id").references(() => mealOccurrences.id, {
+      onDelete: "cascade",
+    }),
     text: text("text").notNull(),
+    dueDate: date("due_date").notNull(),
     completed: boolean("completed").default(false).notNull(),
     createdByMembershipId: uuid("created_by_membership_id")
       .notNull()
@@ -507,8 +575,9 @@ export const actionItems = pgTable(
       .notNull(),
   },
   (table) => [
-    index("action_items_occurrence_completed_idx").on(
-      table.occurrenceId,
+    index("action_items_group_due_completed_idx").on(
+      table.groupId,
+      table.dueDate,
       table.completed,
     ),
   ],

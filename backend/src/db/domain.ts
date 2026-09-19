@@ -91,14 +91,33 @@ export async function materializeMealOccurrence(
     mealType: input.mealType,
     weeklyMenuId: menu?.id ?? null,
   });
-  if (!occurrence.materializedAt) {
-    const templateItems = menu
-      ? await tx
-          .select()
-          .from(menuItems)
-          .where(eq(menuItems.menuId, menu.id))
-          .orderBy(asc(menuItems.sortOrder))
-      : [];
+  const templateItems = menu
+    ? await tx
+        .select()
+        .from(menuItems)
+        .where(eq(menuItems.menuId, menu.id))
+        .orderBy(asc(menuItems.sortOrder))
+    : [];
+  const existingItems = occurrence.materializedAt
+    ? await tx
+        .select()
+        .from(mealOccurrenceItems)
+        .where(eq(mealOccurrenceItems.occurrenceId, occurrence.id))
+        .orderBy(asc(mealOccurrenceItems.sortOrder))
+    : [];
+  const templateChanged =
+    !occurrence.isMenuOverridden &&
+    occurrence.materializedAt &&
+    (existingItems.length !== templateItems.length ||
+      existingItems.some(
+        (item, index) => item.sourceMenuItemId !== templateItems[index]?.id,
+      ));
+  if (!occurrence.materializedAt || templateChanged) {
+    if (templateChanged) {
+      await tx
+        .delete(mealOccurrenceItems)
+        .where(eq(mealOccurrenceItems.occurrenceId, occurrence.id));
+    }
     if (templateItems.length) {
       await tx.insert(mealOccurrenceItems).values(
         templateItems.map((item) => ({
@@ -116,11 +135,14 @@ export async function materializeMealOccurrence(
       .set({ materializedAt: new Date() })
       .where(eq(mealOccurrences.id, occurrence.id));
   }
-  const items = await tx
-    .select()
-    .from(mealOccurrenceItems)
-    .where(eq(mealOccurrenceItems.occurrenceId, occurrence.id))
-    .orderBy(asc(mealOccurrenceItems.sortOrder));
+  const items =
+    !occurrence.materializedAt || templateChanged
+      ? await tx
+          .select()
+          .from(mealOccurrenceItems)
+          .where(eq(mealOccurrenceItems.occurrenceId, occurrence.id))
+          .orderBy(asc(mealOccurrenceItems.sortOrder))
+      : existingItems;
   if (items.length) {
     await tx
       .insert(preparationRecords)

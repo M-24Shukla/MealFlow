@@ -10,13 +10,14 @@
 }
 .cook-top-grid,
 .cook-menu,
-.cook-availability {
+.cook-availability,
+.cook-leave-list {
   grid-column: 1 / -1;
 }
 .cook-top-grid {
   display: grid;
   gap: 24px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
 }
 .recipe-button {
   align-items: center;
@@ -54,22 +55,30 @@
   gap: 10px;
   justify-content: flex-start;
 }
-.preparation-toggle {
-  align-items: center;
-  background: #f2eee4;
-  border: 0;
-  border-radius: 50%;
-  color: #87643c;
-  cursor: pointer;
-  display: inline-flex;
-  height: 18px;
-  justify-content: center;
-  padding: 0;
-  width: 18px;
+.preparation-item-details .recipe-button {
+  margin-left: 0;
 }
-.preparation-toggle.is-prepared {
-  background: #18352b;
-  color: #fffaf2;
+.dish-headcount {
+  color: #597064;
+  font-size: 0.8rem;
+  margin-left: auto;
+  white-space: nowrap;
+}
+.preparation-checkbox {
+  accent-color: #18352b;
+  cursor: pointer;
+  flex: 0 0 20px;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  width: 20px;
+}
+.preparation-checkbox:disabled {
+  cursor: not-allowed;
+}
+.preparation-item.is-prepared strong {
+  color: #6f7e76;
+  text-decoration: line-through;
 }
 .cook-daily-menu {
   border-top: 1px solid #e1ddd0;
@@ -82,6 +91,20 @@
 }
 .cook-daily-menu h4 {
   margin-bottom: 8px;
+}
+.cook-meal-heading {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+.cook-meal-heading h3 {
+  margin: 0;
+}
+.meal-headcount {
+  color: #597064;
+  font-weight: 700;
+  white-space: nowrap;
 }
 .cook-daily-menu li {
   align-items: center;
@@ -97,6 +120,9 @@
 .current-meal-marker {
   color: #2f7a50;
   font-weight: 700;
+}
+.cook-meal-availability {
+  margin-bottom: 12px;
 }
 @media (max-width: 700px) {
   .cook-top-grid {

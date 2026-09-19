@@ -1,15 +1,14 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../lib/api";
-import { dateValue, mealName } from "../lib/meal";
-import type { Group, WeeklyMenu } from "../lib/types";
+import { dateValue } from "../lib/meal";
+import type { Group } from "../lib/types";
 import { ActionItemList, type ActionItem } from "./ActionItemList";
 
 type DinerActionItemsProps = {
   busy: boolean;
   group: Group;
-  menuDate: Date;
-  menus: WeeklyMenu[];
   currentUserName: string;
+  embedded?: boolean;
   run: (work: () => Promise<void>) => Promise<void>;
   onMessage: (message: string) => void;
 };
@@ -17,47 +16,35 @@ type DinerActionItemsProps = {
 export function DinerActionItems({
   busy,
   group,
-  menuDate,
-  menus,
   currentUserName,
+  embedded = false,
   run,
   onMessage,
 }: DinerActionItemsProps) {
-  const weekday = ((menuDate.getDay() + 6) % 7) + 1;
-  const mealMenus = menus.filter(
-    (menu) => menu.weekday === weekday && menu.items.length,
-  );
-  const [mealType, setMealType] = useState("");
   const [items, setItems] = useState<ActionItem[]>([]);
-  const activeMeal = mealMenus.some((menu) => menu.mealType === mealType)
-    ? mealType
-    : (mealMenus[0]?.mealType ?? "");
 
   useEffect(() => {
-    if (!activeMeal) {
-      setItems([]);
-      return;
-    }
     void run(async () => {
-      const results = await Promise.all(
-        mealMenus.map((menu) =>
-          api<{ items: ActionItem[] }>(
-            `/groups/${group.id}/action-items?date=${dateValue(menuDate)}&mealType=${menu.mealType}`,
-          ),
-        ),
+      const result = await api<{ items: ActionItem[] }>(
+        `/groups/${group.id}/action-items`,
       );
-      setItems(results.flatMap((result) => result.items));
+      setItems(result.items);
     });
-  }, [activeMeal, group.id, menuDate, run]);
+  }, [group.id, run]);
 
   const addItem = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     void run(async () => {
-      if (!activeMeal) return;
       const result = await api<{ item: ActionItem }>(
-        `/groups/${group.id}/action-items?date=${dateValue(menuDate)}&mealType=${activeMeal}`,
-        { method: "POST", body: JSON.stringify({ text: form.get("text") }) },
+        `/groups/${group.id}/action-items`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            text: form.get("text"),
+            dueDate: form.get("dueDate"),
+          }),
+        },
       );
       setItems((current) => [...current, result.item]);
       event.currentTarget.reset();
@@ -79,20 +66,18 @@ export function DinerActionItems({
           ? "Action item completed."
           : "Action item returned to pending.",
       );
-      onMessage(
-        completed
-          ? "Action item completed."
-          : "Action item returned to pending.",
-      );
     });
 
   const editItem = (item: ActionItem) => {
     const text = window.prompt("Update action item", item.text)?.trim();
-    if (!text || text === item.text) return;
+    if (!text) return;
+    const dueDate = window.prompt("Update due date (YYYY-MM-DD)", item.dueDate);
+    if (!dueDate) return;
+    if (text === item.text && dueDate === item.dueDate) return;
     void run(async () => {
       const result = await api<{ item: ActionItem }>(
         `/groups/${group.id}/action-items/${item.id}`,
-        { method: "PATCH", body: JSON.stringify({ text }) },
+        { method: "PATCH", body: JSON.stringify({ text, dueDate }) },
       );
       setItems((current) =>
         current.map((action) => (action.id === item.id ? result.item : action)),
@@ -111,38 +96,47 @@ export function DinerActionItems({
   };
 
   return (
-    <section className="workspace diner-action-workspace">
-      <div className="panel">
-        <h2>Action items</h2>
-        <label>
-          Meal
-          <select
-            value={activeMeal}
-            onChange={(event) => setMealType(event.target.value)}
-          >
-            {mealMenus.map((menu) => (
-              <option key={menu.id} value={menu.mealType}>
-                {mealName(menu.mealType)}
-              </option>
-            ))}
-          </select>
-        </label>
-        <form onSubmit={addItem}>
-          <label>
-            Item to source or action to complete
-            <textarea name="text" required />
-          </label>
-          <button className="secondary" disabled={busy || !activeMeal}>
-            Add action item
-          </button>
-        </form>
-        <ActionItemList
-          items={items}
-          currentUserName={currentUserName}
-          onCompletionChange={updateItem}
-          onEdit={editItem}
-          onDelete={deleteItem}
-        />
+    <section
+      className={
+        embedded
+          ? "action-items-workspace cook-action-items"
+          : "workspace action-items-workspace"
+      }
+    >
+      <h2>Action items</h2>
+      <div className="action-items-columns">
+        <section className="panel">
+          <h3>Add action item</h3>
+          <form onSubmit={addItem}>
+            <label>
+              Item to source or action to complete
+              <textarea name="text" required />
+            </label>
+            <label>
+              Due date
+              <input
+                name="dueDate"
+                type="date"
+                min={dateValue(new Date())}
+                defaultValue={dateValue(new Date())}
+                required
+              />
+            </label>
+            <button className="secondary" disabled={busy}>
+              Add action item
+            </button>
+          </form>
+        </section>
+        <section className="panel">
+          <h3>Action items</h3>
+          <ActionItemList
+            items={items}
+            currentUserName={currentUserName}
+            onCompletionChange={updateItem}
+            onEdit={editItem}
+            onDelete={deleteItem}
+          />
+        </section>
       </div>
     </section>
   );

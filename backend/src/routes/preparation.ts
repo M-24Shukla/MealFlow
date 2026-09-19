@@ -1,10 +1,10 @@
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { db } from "../db/client.js";
 import { materializeMealOccurrence } from "../db/domain.js";
-import { groupHeadcount } from "../db/headcount.js";
+import { groupHeadcount, groupItemHeadcounts } from "../db/headcount.js";
 import {
   actionItems,
   mealOccurrenceItems,
@@ -36,14 +36,21 @@ const leaveInput = z.object({
 const statusInput = z.object({
   status: z.enum(["UNPREPARED", "PREPARED"]),
 });
-const actionItemInput = z.object({ text: z.string().trim().min(1).max(500) });
+const actionItemInput = z.object({
+  text: z.string().trim().min(1).max(500),
+  dueDate: date,
+});
 const actionItemUpdateInput = z
   .object({
     completed: z.boolean().optional(),
     text: z.string().trim().min(1).max(500).optional(),
+    dueDate: date.optional(),
   })
   .refine(
-    (value) => value.completed !== undefined || value.text !== undefined,
+    (value) =>
+      value.completed !== undefined ||
+      value.text !== undefined ||
+      value.dueDate !== undefined,
     {
       message: "Provide an action-item update.",
     },
@@ -52,6 +59,7 @@ const actionItemUpdateInput = z
 const actionItemFields = {
   id: actionItems.id,
   text: actionItems.text,
+  dueDate: actionItems.dueDate,
   completed: actionItems.completed,
   createdAt: actionItems.createdAt,
   completedAt: sql<Date | null>`action_items.completed_at`,
@@ -73,6 +81,33 @@ function mealQuery(context: {
 }
 
 export const preparationRoutes = new Hono<{ Variables: AppVariables }>();
+
+preparationRoutes.get("/:groupId/my/cook-onboarding", async (context) => {
+  const { membership } = await requireGroupRole(
+    context,
+    context.req.param("groupId"),
+    ["PRODUCER"],
+  );
+  const [onboarding] = await db
+    .select({ completedAt: memberships.cookOnboardingCompletedAt })
+    .from(memberships)
+    .where(eq(memberships.id, membership.id))
+    .limit(1);
+  return context.json({ completed: Boolean(onboarding?.completedAt) });
+});
+
+preparationRoutes.put("/:groupId/my/cook-onboarding", async (context) => {
+  const { membership } = await requireGroupRole(
+    context,
+    context.req.param("groupId"),
+    ["PRODUCER"],
+  );
+  await db
+    .update(memberships)
+    .set({ cookOnboardingCompletedAt: new Date() })
+    .where(eq(memberships.id, membership.id));
+  return context.json({ completed: true });
+});
 
 preparationRoutes.put("/:groupId/my/producer-off-days", async (context) => {
   const { membership } = await requireGroupRole(
@@ -298,11 +333,13 @@ preparationRoutes.get("/:groupId/preparation", async (context) => {
         message: "You are not assigned to this meal.",
       });
   }
-  const [headcount, items, actions] = await Promise.all([
+  const [headcount, items] = await Promise.all([
     groupHeadcount(groupId, mealDate, mealType),
     db
       .select({
         id: preparationRecords.id,
+        occurrenceItemId: mealOccurrenceItems.id,
+        sourceMenuItemId: mealOccurrenceItems.sourceMenuItemId,
         name: mealOccurrenceItems.name,
         category: mealOccurrenceItems.category,
         recipeUrl: mealOccurrenceItems.recipeUrl,
@@ -318,17 +355,23 @@ preparationRoutes.get("/:groupId/preparation", async (context) => {
       )
       .where(eq(mealOccurrenceItems.occurrenceId, occurrence.id))
       .orderBy(asc(mealOccurrenceItems.sortOrder)),
-    db
-      .select(actionItemFields)
-      .from(actionItems)
-      .where(eq(actionItems.occurrenceId, occurrence.id))
-      .orderBy(asc(actionItems.createdAt)),
   ]);
+  const itemHeadcounts = await groupItemHeadcounts(
+    groupId,
+    mealDate,
+    mealType,
+    items.map(({ occurrenceItemId, sourceMenuItemId }) => ({
+      id: occurrenceItemId,
+      sourceMenuItemId,
+    })),
+  );
   return context.json({
     occurrence,
     headcount: headcount.expected,
-    items,
-    actions,
+    items: items.map(({ occurrenceItemId, ...item }) => ({
+      ...item,
+      expectedDiners: itemHeadcounts.get(occurrenceItemId) ?? 0,
+    })),
   });
 });
 
@@ -393,22 +436,13 @@ preparationRoutes.patch("/:groupId/preparation/:recordId", async (context) => {
 preparationRoutes.get("/:groupId/action-items", async (context) => {
   const groupId = context.req.param("groupId");
   await requireGroupRole(context, groupId, ["ADMIN", "CONSUMER", "PRODUCER"]);
-  const { mealDate, mealType } = mealQuery(context);
-  const { occurrence } = await db.transaction((tx) =>
-    materializeMealOccurrence(tx, {
-      groupId,
-      mealDate,
-      mealType,
-      weekday: isoWeekday(mealDate),
-    }),
-  );
   const items = await db
     .select({
       ...actionItemFields,
     })
     .from(actionItems)
-    .where(eq(actionItems.occurrenceId, occurrence.id))
-    .orderBy(asc(actionItems.createdAt));
+    .where(eq(actionItems.groupId, groupId))
+    .orderBy(desc(actionItems.dueDate), desc(actionItems.createdAt));
   return context.json({ items });
 });
 
@@ -419,21 +453,18 @@ preparationRoutes.post("/:groupId/action-items", async (context) => {
     "CONSUMER",
     "PRODUCER",
   ]);
-  const { mealDate, mealType } = mealQuery(context);
   const payload = await readJson(context.req.raw, actionItemInput);
-  const { occurrence } = await db.transaction((tx) =>
-    materializeMealOccurrence(tx, {
-      groupId,
-      mealDate,
-      mealType,
-      weekday: isoWeekday(mealDate),
-    }),
-  );
+  if (payload.dueDate < new Date().toISOString().slice(0, 10)) {
+    throw new HTTPException(400, {
+      message: "Due date cannot be in the past.",
+    });
+  }
   const [item] = await db
     .insert(actionItems)
     .values({
-      occurrenceId: occurrence.id,
+      groupId,
       text: payload.text,
+      dueDate: payload.dueDate,
       createdByMembershipId: actor.membership.id,
     })
     .returning();
@@ -455,23 +486,32 @@ preparationRoutes.patch("/:groupId/action-items/:itemId", async (context) => {
   const [item] = await db
     .select({ id: actionItems.id })
     .from(actionItems)
-    .innerJoin(
-      mealOccurrences,
-      eq(actionItems.occurrenceId, mealOccurrences.id),
-    )
     .where(
       and(
         eq(actionItems.id, context.req.param("itemId")),
-        eq(mealOccurrences.groupId, groupId),
+        eq(actionItems.groupId, groupId),
       ),
     )
     .limit(1);
   if (!item)
     throw new HTTPException(404, { message: "Action item was not found." });
+  if (
+    payload.dueDate !== undefined &&
+    payload.dueDate < new Date().toISOString().slice(0, 10)
+  ) {
+    throw new HTTPException(400, {
+      message: "Due date cannot be in the past.",
+    });
+  }
   if (payload.text !== undefined)
     await db
       .update(actionItems)
       .set({ text: payload.text })
+      .where(eq(actionItems.id, item.id));
+  if (payload.dueDate !== undefined)
+    await db
+      .update(actionItems)
+      .set({ dueDate: payload.dueDate })
       .where(eq(actionItems.id, item.id));
   if (payload.completed !== undefined)
     await db.execute(sql`
@@ -496,7 +536,7 @@ preparationRoutes.delete("/:groupId/action-items/:itemId", async (context) => {
     .where(
       and(
         eq(actionItems.id, context.req.param("itemId")),
-        sql`${actionItems.occurrenceId} in (select ${mealOccurrences.id} from ${mealOccurrences} where ${mealOccurrences.groupId} = ${groupId})`,
+        eq(actionItems.groupId, groupId),
       ),
     )
     .returning({ id: actionItems.id });

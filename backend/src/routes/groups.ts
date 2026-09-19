@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -12,7 +12,7 @@ import {
   users,
 } from "../db/schema.js";
 import { readJson } from "../lib/http.js";
-import { requireGroupCreator } from "../lib/group-auth.js";
+import { requireGroupMembership, requireGroupRole } from "../lib/group-auth.js";
 import { requireUser, type AppVariables } from "../lib/session.js";
 
 const groupInput = z.object({
@@ -213,10 +213,8 @@ groupRoutes.post("/public/:slug/join-requests", async (context) => {
 });
 
 groupRoutes.get("/:groupId/join-requests", async (context) => {
-  const group = await requireGroupCreator(
-    context,
-    context.req.param("groupId"),
-  );
+  const groupId = context.req.param("groupId");
+  await requireGroupRole(context, groupId, ["ADMIN"]);
   const requests = await db
     .select({
       id: joinRequests.id,
@@ -229,7 +227,7 @@ groupRoutes.get("/:groupId/join-requests", async (context) => {
     .innerJoin(users, eq(users.id, joinRequests.applicantId))
     .where(
       and(
-        eq(joinRequests.groupId, group.id),
+        eq(joinRequests.groupId, groupId),
         eq(joinRequests.status, "PENDING"),
       ),
     );
@@ -237,10 +235,8 @@ groupRoutes.get("/:groupId/join-requests", async (context) => {
 });
 
 groupRoutes.get("/:groupId/members", async (context) => {
-  const group = await requireGroupCreator(
-    context,
-    context.req.param("groupId"),
-  );
+  const groupId = context.req.param("groupId");
+  await requireGroupRole(context, groupId, ["ADMIN"]);
   const rows = await db
     .select({
       membershipId: memberships.id,
@@ -256,7 +252,7 @@ groupRoutes.get("/:groupId/members", async (context) => {
       eq(membershipRoles.membershipId, memberships.id),
     )
     .where(
-      and(eq(memberships.groupId, group.id), eq(memberships.status, "ACTIVE")),
+      and(eq(memberships.groupId, groupId), eq(memberships.status, "ACTIVE")),
     );
   const members = new Map<
     string,
@@ -285,10 +281,8 @@ groupRoutes.get("/:groupId/members", async (context) => {
 });
 
 groupRoutes.put("/:groupId/members/:membershipId/admin", async (context) => {
-  const group = await requireGroupCreator(
-    context,
-    context.req.param("groupId"),
-  );
+  const groupId = context.req.param("groupId");
+  await requireGroupRole(context, groupId, ["ADMIN"]);
   const payload = await readJson(context.req.raw, administratorRoleInput);
   const [membership] = await db
     .select()
@@ -296,7 +290,7 @@ groupRoutes.put("/:groupId/members/:membershipId/admin", async (context) => {
     .where(
       and(
         eq(memberships.id, context.req.param("membershipId")),
-        eq(memberships.groupId, group.id),
+        eq(memberships.groupId, groupId),
         eq(memberships.status, "ACTIVE"),
       ),
     )
@@ -306,7 +300,12 @@ groupRoutes.put("/:groupId/members/:membershipId/admin", async (context) => {
       message: "Active membership was not found.",
     });
   }
-  if (membership.userId === group.creatorId) {
+  const [group] = await db
+    .select({ creatorId: groups.creatorId })
+    .from(groups)
+    .where(eq(groups.id, groupId))
+    .limit(1);
+  if (membership.userId === group?.creatorId) {
     throw new HTTPException(403, {
       message: "The group creator's roles cannot be changed.",
     });
@@ -344,21 +343,114 @@ groupRoutes.put("/:groupId/members/:membershipId/admin", async (context) => {
   return context.json({ membershipId: membership.id, roles });
 });
 
+groupRoutes.delete("/:groupId/my-membership", async (context) => {
+  const groupId = context.req.param("groupId");
+  const membership = await requireGroupMembership(context, groupId);
+  const [[current], [group]] = await Promise.all([
+    db
+      .select({ userId: memberships.userId })
+      .from(memberships)
+      .where(eq(memberships.id, membership.id))
+      .limit(1),
+    db
+      .select({ creatorId: groups.creatorId })
+      .from(groups)
+      .where(eq(groups.id, groupId))
+      .limit(1),
+  ]);
+  if (!current || !group) {
+    throw new HTTPException(404, { message: "Membership was not found." });
+  }
+  let replacementCreatorId: string | null = null;
+  if (group.creatorId === current.userId) {
+    const [replacement] = await db
+      .select({ userId: memberships.userId })
+      .from(memberships)
+      .innerJoin(
+        membershipRoles,
+        eq(membershipRoles.membershipId, memberships.id),
+      )
+      .where(
+        and(
+          eq(memberships.groupId, groupId),
+          eq(memberships.status, "ACTIVE"),
+          eq(membershipRoles.role, "ADMIN"),
+          sql`${memberships.id} <> ${membership.id}`,
+        ),
+      )
+      .orderBy(asc(memberships.createdAt))
+      .limit(1);
+    if (!replacement) {
+      throw new HTTPException(409, {
+        message: "Make another member an admin before leaving this group.",
+      });
+    }
+    replacementCreatorId = replacement.userId;
+  }
+  await db.transaction(async (tx) => {
+    if (replacementCreatorId) {
+      await tx
+        .update(groups)
+        .set({ creatorId: replacementCreatorId })
+        .where(eq(groups.id, groupId));
+    }
+    await tx
+      .update(memberships)
+      .set({ status: "REMOVED" })
+      .where(eq(memberships.id, membership.id));
+  });
+  return context.json({ membershipId: membership.id, status: "REMOVED" });
+});
+
+groupRoutes.delete("/:groupId/members/:membershipId", async (context) => {
+  const groupId = context.req.param("groupId");
+  await requireGroupRole(context, groupId, ["ADMIN"]);
+  const [membership] = await db
+    .select({ id: memberships.id, userId: memberships.userId })
+    .from(memberships)
+    .where(
+      and(
+        eq(memberships.id, context.req.param("membershipId")),
+        eq(memberships.groupId, groupId),
+        eq(memberships.status, "ACTIVE"),
+      ),
+    )
+    .limit(1);
+  if (!membership) {
+    throw new HTTPException(404, {
+      message: "Active membership was not found.",
+    });
+  }
+  const [group] = await db
+    .select({ creatorId: groups.creatorId })
+    .from(groups)
+    .where(eq(groups.id, groupId))
+    .limit(1);
+  if (membership.userId === group?.creatorId) {
+    throw new HTTPException(403, {
+      message: "The group creator cannot be removed.",
+    });
+  }
+  await db
+    .update(memberships)
+    .set({ status: "REMOVED" })
+    .where(eq(memberships.id, membership.id));
+  return context.json({ membershipId: membership.id, status: "REMOVED" });
+});
+
 groupRoutes.post(
   "/:groupId/join-requests/:requestId/approve",
   async (context) => {
     const user = requireUser(context);
-    const group = await requireGroupCreator(
-      context,
-      context.req.param("groupId"),
-    );
+    const groupId = context.req.param("groupId");
+    await requireGroupRole(context, groupId, ["ADMIN"]);
     const [request] = await db
       .select()
       .from(joinRequests)
       .where(
         and(
           eq(joinRequests.id, context.req.param("requestId")),
-          eq(joinRequests.groupId, group.id),
+          eq(joinRequests.groupId, groupId),
           eq(joinRequests.status, "PENDING"),
         ),
       )
@@ -370,7 +462,7 @@ groupRoutes.post(
 
     await db.transaction(async (tx) => {
       await activateMembershipWithRole(tx, {
-        groupId: group.id,
+        groupId,
         userId: request.applicantId,
         role: request.requestedRole,
       });
@@ -391,17 +483,15 @@ groupRoutes.post(
   "/:groupId/join-requests/:requestId/reject",
   async (context) => {
     const user = requireUser(context);
-    const group = await requireGroupCreator(
-      context,
-      context.req.param("groupId"),
-    );
+    const groupId = context.req.param("groupId");
+    await requireGroupRole(context, groupId, ["ADMIN"]);
     const [request] = await db
       .update(joinRequests)
       .set({ status: "REJECTED", reviewedAt: new Date(), reviewedBy: user.id })
       .where(
         and(
           eq(joinRequests.id, context.req.param("requestId")),
-          eq(joinRequests.groupId, group.id),
+          eq(joinRequests.groupId, groupId),
           eq(joinRequests.status, "PENDING"),
         ),
       )
