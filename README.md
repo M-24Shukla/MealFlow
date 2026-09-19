@@ -1,8 +1,8 @@
-# MealFlow — Weekly Menu & Meal Management
+# CookDuKoo — Weekly Menu & Meal Management
 
 ## Recommended build
 
-MealFlow is a multi-tenant web app for shared kitchens and mess groups. It lets a group publish weekly meal schedules and menus, shows the currently active meal and recipe links, calculates diners after attendance overrides, and gives producers a preparation workflow.
+CookDuKoo is a multi-tenant web app for shared kitchens and mess groups. It lets a group publish weekly meal schedules and menus, shows the currently active meal and recipe links, calculates diners after attendance overrides, and gives producers a preparation workflow.
 
 ### Stack
 

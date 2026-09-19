@@ -1,5 +1,5 @@
 {
-  "name": "mealflow",
+  "name": "cookdukoo",
   "private": true,
   "scripts": {
     "build": "npm --prefix backend run build && npm --prefix frontend run build",

@@ -1,6 +1,6 @@
 # Architecture
 
-MealFlow uses a React/Vite frontend and a Node.js/Hono API deployed as separate Render services, with Supabase PostgreSQL as the authoritative relational database. The deployment topology is defined in [`render.yaml`](../render.yaml).
+CookDuKoo uses a React/Vite frontend and a Node.js/Hono API deployed as separate Render services, with Supabase PostgreSQL as the authoritative relational database. The deployment topology is defined in [`render.yaml`](../render.yaml).
 
 ## Boundaries
 

@@ -25,11 +25,18 @@ main {
   padding-top: 24px;
 }
 .brand {
+  align-items: center;
   color: #18352b;
+  display: inline-flex;
   font-size: 1.45rem;
   font-weight: 800;
+  gap: 9px;
   letter-spacing: -0.06em;
   text-decoration: none;
+}
+.brand-icon {
+  height: 34px;
+  width: 34px;
 }
 .brand span {
   color: #d45b38;

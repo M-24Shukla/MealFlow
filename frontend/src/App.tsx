@@ -755,7 +755,8 @@ export default function App() {
     <main>
       <nav className="nav">
         <a className="brand" href="/">
-          Meal<span>Flow</span>
+          <img className="brand-icon" src="/favicon.svg" alt="" />
+          Cook<span>DuKoo</span>
         </a>
         {user && (
           <div className="nav-actions">
