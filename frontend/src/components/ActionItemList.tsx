@@ -8,6 +8,7 @@ export type ActionItem = {
   completedByName: string | null;
   createdAt: string;
   completedAt: string | null;
+  dueDate: string;
 };
 
 type ActionItemListProps = {
@@ -26,9 +27,15 @@ export function ActionItemList({
   onDelete,
 }: ActionItemListProps) {
   const [status, setStatus] = useState<"PENDING" | "COMPLETED">("PENDING");
-  const visibleItems = items.filter((item) =>
-    status === "COMPLETED" ? item.completed : !item.completed,
-  );
+  const visibleItems = items
+    .filter((item) =>
+      status === "COMPLETED" ? item.completed : !item.completed,
+    )
+    .sort(
+      (left, right) =>
+        right.dueDate.localeCompare(left.dueDate) ||
+        right.createdAt.localeCompare(left.createdAt),
+    );
 
   return (
     <>
@@ -56,6 +63,7 @@ export function ActionItemList({
           />
           <span>
             <strong>{item.text}</strong>
+            <small className="action-item-due">Due {item.dueDate}</small>
           </span>
           <details className="action-item-info">
             <summary aria-label={`Details for ${item.text}`}>i</summary>
@@ -91,6 +99,11 @@ export function ActionItemList({
           </button>
         </div>
       ))}
+      {!visibleItems.length && (
+        <p className="empty">
+          No {status === "COMPLETED" ? "completed" : "pending"} action items.
+        </p>
+      )}
     </>
   );
 }

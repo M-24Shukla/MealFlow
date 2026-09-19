@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -12,7 +12,7 @@ import {
   users,
 } from "../db/schema.js";
 import { readJson } from "../lib/http.js";
-import { requireGroupRole } from "../lib/group-auth.js";
+import { requireGroupMembership, requireGroupRole } from "../lib/group-auth.js";
 import { requireUser, type AppVariables } from "../lib/session.js";
 
 const groupInput = z.object({
@@ -341,6 +341,65 @@ groupRoutes.put("/:groupId/members/:membershipId/admin", async (context) => {
     roles.splice(roles.indexOf("ADMIN"), 1);
   }
   return context.json({ membershipId: membership.id, roles });
+});
+
+groupRoutes.delete("/:groupId/my-membership", async (context) => {
+  const groupId = context.req.param("groupId");
+  const membership = await requireGroupMembership(context, groupId);
+  const [[current], [group]] = await Promise.all([
+    db
+      .select({ userId: memberships.userId })
+      .from(memberships)
+      .where(eq(memberships.id, membership.id))
+      .limit(1),
+    db
+      .select({ creatorId: groups.creatorId })
+      .from(groups)
+      .where(eq(groups.id, groupId))
+      .limit(1),
+  ]);
+  if (!current || !group) {
+    throw new HTTPException(404, { message: "Membership was not found." });
+  }
+  let replacementCreatorId: string | null = null;
+  if (group.creatorId === current.userId) {
+    const [replacement] = await db
+      .select({ userId: memberships.userId })
+      .from(memberships)
+      .innerJoin(
+        membershipRoles,
+        eq(membershipRoles.membershipId, memberships.id),
+      )
+      .where(
+        and(
+          eq(memberships.groupId, groupId),
+          eq(memberships.status, "ACTIVE"),
+          eq(membershipRoles.role, "ADMIN"),
+          sql`${memberships.id} <> ${membership.id}`,
+        ),
+      )
+      .orderBy(asc(memberships.createdAt))
+      .limit(1);
+    if (!replacement) {
+      throw new HTTPException(409, {
+        message: "Make another member an admin before leaving this group.",
+      });
+    }
+    replacementCreatorId = replacement.userId;
+  }
+  await db.transaction(async (tx) => {
+    if (replacementCreatorId) {
+      await tx
+        .update(groups)
+        .set({ creatorId: replacementCreatorId })
+        .where(eq(groups.id, groupId));
+    }
+    await tx
+      .update(memberships)
+      .set({ status: "REMOVED" })
+      .where(eq(memberships.id, membership.id));
+  });
+  return context.json({ membershipId: membership.id, status: "REMOVED" });
 });
 
 groupRoutes.delete("/:groupId/members/:membershipId", async (context) => {

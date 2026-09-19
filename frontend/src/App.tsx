@@ -8,9 +8,12 @@ import {
 import "./App.css";
 import "./styles/admin.css";
 import { CookWorkspace } from "./components/CookWorkspace";
+import { AttendanceIcon } from "./components/AttendanceIcon";
 import { DinerActionItems } from "./components/DinerActionItems";
+import { DinerOnboarding } from "./components/DinerOnboarding";
 import { DinerWorkspace } from "./components/DinerWorkspace";
 import { GroupJoinQr } from "./components/GroupJoinQr";
+import { LeaveGroupButton } from "./components/LeaveGroupButton";
 import { QrJoinScanner } from "./components/QrJoinScanner";
 import { api } from "./lib/api";
 import {
@@ -99,6 +102,15 @@ export default function App() {
   >(null);
   const [dateUnavailable, setDateUnavailable] = useState<string[]>([]);
   const [dateAvailable, setDateAvailable] = useState<string[]>([]);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [onboardingRequired, setOnboardingRequired] = useState(false);
+  const [recurringItemAbsences, setRecurringItemAbsences] = useState<string[]>(
+    [],
+  );
+  const [dietaryCategories, setDietaryCategories] = useState<string[]>([]);
+  const [itemAttendance, setItemAttendance] = useState<
+    Record<string, "PRESENT" | "ABSENT">
+  >({});
   const [cookLeaves, setCookLeaves] = useState<CookLeave[]>([]);
   const [cookCount, setCookCount] = useState(0);
   const [vacations, setVacations] = useState<Vacation[]>([]);
@@ -144,16 +156,25 @@ export default function App() {
     setCookLeaves(cookLeaveData.leaves);
     setCookCount(cookLeaveData.cookCount);
     if (selectedGroup.roles?.includes("CONSUMER")) {
-      const [availability, vacationData] = await Promise.all([
+      const [availability, vacationData, onboarding] = await Promise.all([
         api<{ rules: { weekday: number; mealType: string }[] }>(
           `/groups/${selectedGroup.id}/my/recurring-absences`,
         ),
         api<{ vacations: Vacation[] }>(
           `/groups/${selectedGroup.id}/my/vacations`,
         ),
+        api<{
+          completed: boolean;
+          absentMenuItemIds: string[];
+          dietaryCategories: string[];
+        }>(`/groups/${selectedGroup.id}/my/onboarding`),
       ]);
       setRecurringAbsences(availability.rules);
       setVacations(vacationData.vacations);
+      setRecurringItemAbsences(onboarding.absentMenuItemIds);
+      setDietaryCategories(onboarding.dietaryCategories);
+      setOnboardingRequired(!onboarding.completed);
+      setOnboardingOpen(!onboarding.completed);
     }
   };
   const loadDateAttendance = async (selectedGroup: Group, date: Date) => {
@@ -242,6 +263,7 @@ export default function App() {
       setDateUnavailable([]);
       setDateAvailable([]);
       setDailyMenuItems({});
+      setItemAttendance({});
       return;
     }
     setDateUnavailable([]);
@@ -258,10 +280,31 @@ export default function App() {
           ),
         ),
       ),
+      api<{
+        recurringAbsentItemIds: string[];
+        overrides: {
+          itemId: string;
+          mealType: string;
+          attendance: "PRESENT" | "ABSENT";
+        }[];
+      }>(
+        `/groups/${group.id}/my/item-attendance?date=${dateValue(menuDate)}`,
+      ).then(({ recurringAbsentItemIds, overrides }) => {
+        setRecurringItemAbsences(recurringAbsentItemIds);
+        setItemAttendance(
+          Object.fromEntries(
+            overrides.map((override) => [
+              `${override.mealType}:${override.itemId}`,
+              override.attendance,
+            ]),
+          ),
+        );
+      }),
     ]).catch(() => {
       setDateUnavailable([]);
       setDateAvailable([]);
       setDailyMenuItems({});
+      setItemAttendance({});
     });
   }, [group, menuDate]);
   useEffect(() => {
@@ -366,6 +409,18 @@ export default function App() {
       setActiveMeal(undefined);
       await loadMenuWorkspace(selectedGroup);
     });
+  const leaveGroup = () => {
+    if (!group || !window.confirm(`Leave ${group.name}?`)) return;
+    void run(async () => {
+      await api(`/groups/${group.id}/my-membership`, { method: "DELETE" });
+      await loadMyGroups();
+      window.history.pushState({}, "", "/");
+      setPath("/");
+      setGroup(null);
+      setMenus([]);
+      setMessage(`You left ${group.name}.`);
+    });
+  };
   const isAdmin = group?.roles?.includes("ADMIN") ?? false;
   const isConsumer = group?.roles?.includes("CONSUMER") ?? false;
   const isProducer = group?.roles?.includes("PRODUCER") ?? false;
@@ -453,6 +508,14 @@ export default function App() {
         (rule) =>
           rule.weekday === selectedWeekday && rule.mealType === mealType,
       ));
+  const isItemPresent = (mealType: string, itemId: string) => {
+    if (isMealUnavailable(mealType)) return false;
+    const override = itemAttendance[`${mealType}:${itemId}`];
+    return (
+      override === "PRESENT" ||
+      (override !== "ABSENT" && !recurringItemAbsences.includes(itemId))
+    );
+  };
   const loadCreatorTools = useCallback(() => {
     void run(async () => {
       if (!group?.id) return;
@@ -600,6 +663,22 @@ export default function App() {
       setDateUnavailable((current) =>
         current.filter((item) => item !== `${date}:${mealType}`),
       );
+    });
+  const setItemPresent = (mealType: string, itemId: string, present: boolean) =>
+    void run(async () => {
+      if (!group) return;
+      const attendance = present ? "PRESENT" : "ABSENT";
+      await api(
+        `/groups/${group.id}/my/item-attendance/${dateValue(menuDate)}/${mealType}/${itemId}`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ attendance }),
+        },
+      );
+      setItemAttendance((current) => ({
+        ...current,
+        [`${mealType}:${itemId}`]: attendance,
+      }));
     });
   const markVacation = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1101,7 +1180,21 @@ export default function App() {
           <p className="eyebrow">{group.timezone}</p>
           <div className="group-title-row">
             <h1>{group.name}</h1>
-            <GroupJoinQr group={group} />
+            <div className="group-title-actions">
+              {isConsumer && (
+                <button
+                  className="secondary tour-button"
+                  onClick={() => {
+                    setOnboardingRequired(false);
+                    setOnboardingOpen(true);
+                  }}
+                >
+                  Start diner tour
+                </button>
+              )}
+              <GroupJoinQr group={group} />
+              <LeaveGroupButton busy={busy} onLeave={leaveGroup} />
+            </div>
           </div>
           <div className="day-switcher" aria-label="Choose menu day">
             <button
@@ -1142,26 +1235,29 @@ export default function App() {
                   {cookUnavailableMeals.includes(menu.mealType) && (
                     <p className="unavailable-marker">👨‍🍳 Cook unavailable</p>
                   )}
-                  {isMealUnavailable(menu.mealType) ? (
-                    <>
-                      <p className="unavailable-marker">Not available</p>
-                      <button
-                        className="secondary"
-                        onClick={() => markMealAvailable(menu.mealType)}
-                        disabled={busy}
-                      >
-                        Available this day
-                      </button>
-                    </>
-                  ) : isConsumer ? (
+                  {isConsumer && (
                     <button
-                      className="secondary"
-                      onClick={() => markMealUnavailable(menu.mealType)}
+                      className={`attendance-toggle meal-attendance-toggle${isMealUnavailable(menu.mealType) ? "" : " is-present"}`}
+                      aria-pressed={!isMealUnavailable(menu.mealType)}
+                      aria-label={`${mealName(menu.mealType)}: ${isMealUnavailable(menu.mealType) ? "absent" : "present"}`}
+                      title={
+                        isMealUnavailable(menu.mealType)
+                          ? "Absent — select to mark present"
+                          : "Present — select to mark absent"
+                      }
+                      onClick={() =>
+                        isMealUnavailable(menu.mealType)
+                          ? markMealAvailable(menu.mealType)
+                          : markMealUnavailable(menu.mealType)
+                      }
                       disabled={busy}
                     >
-                      Not available
+                      <AttendanceIcon
+                        present={!isMealUnavailable(menu.mealType)}
+                      />
+                      {isMealUnavailable(menu.mealType) ? "Absent" : "Present"}
                     </button>
-                  ) : null}
+                  )}
                   <ul>
                     {menu.items.map((item) => (
                       <li key={item.id}>
@@ -1179,20 +1275,53 @@ export default function App() {
                         <div className="dish-actions">
                           <span>{foodCategoryName(item.category)}</span>
                           {isConsumer && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setReplacementMealType(menu.mealType);
-                                setReplacementItem(item);
-                                setReplacementName("");
-                                setReplacementCategory("VEGAN");
-                                setReplacementRecipeUrl("");
-                                setReplacementSavedFoodId("");
-                                setReplacementDialogOpen(true);
-                              }}
-                            >
-                              Change
-                            </button>
+                            <>
+                              <button
+                                type="button"
+                                className={`attendance-toggle item-attendance-toggle${isItemPresent(menu.mealType, item.id) ? " is-present" : ""}`}
+                                aria-pressed={isItemPresent(
+                                  menu.mealType,
+                                  item.id,
+                                )}
+                                aria-label={`${item.name}: ${isItemPresent(menu.mealType, item.id) ? "present" : "absent"}`}
+                                title={
+                                  isItemPresent(menu.mealType, item.id)
+                                    ? "Included — select to skip this dish"
+                                    : "Skipped — select to join this dish"
+                                }
+                                onClick={() =>
+                                  setItemPresent(
+                                    menu.mealType,
+                                    item.id,
+                                    !isItemPresent(menu.mealType, item.id),
+                                  )
+                                }
+                                disabled={
+                                  busy || isMealUnavailable(menu.mealType)
+                                }
+                              >
+                                <AttendanceIcon
+                                  present={isItemPresent(
+                                    menu.mealType,
+                                    item.id,
+                                  )}
+                                />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setReplacementMealType(menu.mealType);
+                                  setReplacementItem(item);
+                                  setReplacementName("");
+                                  setReplacementCategory("VEGAN");
+                                  setReplacementRecipeUrl("");
+                                  setReplacementSavedFoodId("");
+                                  setReplacementDialogOpen(true);
+                                }}
+                              >
+                                Change
+                              </button>
+                            </>
                           )}
                         </div>
                       </li>
@@ -1241,37 +1370,7 @@ export default function App() {
               ))}
             </div>
           )}
-          <section className="panel cook-leave-schedule">
-            <h2>Cook leave schedule</h2>
-            {cookLeaveRanges.length ? (
-              cookLeaveRanges.map((leave) => (
-                <p
-                  className="list-row"
-                  key={`${leave.membershipId}-${leave.start}-${leave.startMeal}-${leave.end}-${leave.endMeal}`}
-                >
-                  <span>
-                    👨‍🍳 {leave.start} · {mealName(leave.startMeal)} – {leave.end}{" "}
-                    · {mealName(leave.endMeal)}
-                    {leave.reason ? ` · ${leave.reason}` : ""}
-                  </span>
-                </p>
-              ))
-            ) : (
-              <p className="empty">No cook leave ranges are recorded.</p>
-            )}
-          </section>
         </section>
-      )}
-      {isGroupPage && user && group?.id && group.roles && isConsumer && (
-        <DinerActionItems
-          busy={busy}
-          group={group}
-          menuDate={menuDate}
-          menus={menus}
-          currentUserName={user.displayName}
-          run={run}
-          onMessage={setMessage}
-        />
       )}
       {isGroupPage && user && group?.id && group.roles && isAdmin && (
         <button className="menu-add" onClick={() => setMenuEditorOpen(true)}>
@@ -1603,6 +1702,84 @@ export default function App() {
           </section>
         </div>
       )}
+      {isGroupPage &&
+        user &&
+        group?.id &&
+        group.roles &&
+        isConsumer &&
+        onboardingOpen && (
+          <DinerOnboarding
+            busy={busy}
+            initialAbsentItemIds={recurringItemAbsences}
+            initialDietaryCategories={dietaryCategories}
+            menus={menus}
+            required={onboardingRequired}
+            onClose={() => {
+              setOnboardingOpen(false);
+              setOnboardingRequired(false);
+            }}
+            onSave={async (absentMenuItemIds, selectedDietaryCategories) => {
+              let saved = false;
+              await run(async () => {
+                await api(`/groups/${group.id}/my/onboarding`, {
+                  method: "PUT",
+                  body: JSON.stringify({
+                    absentMenuItemIds,
+                    dietaryCategories: selectedDietaryCategories,
+                  }),
+                });
+                setRecurringItemAbsences(absentMenuItemIds);
+                setDietaryCategories(selectedDietaryCategories);
+                setOnboardingRequired(false);
+                setMessage("Diner attendance preferences saved.");
+                saved = true;
+              });
+              return saved;
+            }}
+          />
+        )}
+      {isGroupPage &&
+        user &&
+        group?.id &&
+        group.roles &&
+        isConsumer &&
+        !isProducer && (
+          <DinerActionItems
+            busy={busy}
+            group={group}
+            currentUserName={user.displayName}
+            run={run}
+            onMessage={setMessage}
+          />
+        )}
+      {isGroupPage &&
+        user &&
+        group?.id &&
+        group.roles &&
+        isConsumer &&
+        !isProducer && (
+          <section className="cook-leave-wrapper">
+            <div className="panel cook-leave-schedule">
+              <h2>Cook leave schedule</h2>
+              {cookLeaveRanges.length ? (
+                cookLeaveRanges.map((leave) => (
+                  <p
+                    className="list-row"
+                    key={`${leave.membershipId}-${leave.start}-${leave.startMeal}-${leave.end}-${leave.endMeal}`}
+                  >
+                    <span>
+                      👨‍🍳 {leave.start} · {mealName(leave.startMeal)} –{" "}
+                      {leave.end} · {mealName(leave.endMeal)}
+                      {leave.reason ? ` · ${leave.reason}` : ""}
+                    </span>
+                  </p>
+                ))
+              ) : (
+                <p className="empty">No cook leave ranges are recorded.</p>
+              )}
+            </div>
+          </section>
+        )}
       {isGroupPage && user && group?.id && group.roles && isConsumer && (
         <DinerWorkspace
           busy={busy}
@@ -1658,7 +1835,7 @@ export default function App() {
       )}
       {isGroupPage && user && group?.id && group.roles && isAdmin && (
         <section className="member-management">
-          <h2>Members management</h2>
+          <h2>Members</h2>
           <div className="member-management-grid">
             <section className="panel">
               <h2>Invite management</h2>
@@ -1752,6 +1929,7 @@ export default function App() {
           currentUserName={user.displayName}
           run={run}
           onMessage={setMessage}
+          onLeave={leaveGroup}
           onBack={() => {
             window.history.pushState({}, "", "/");
             setPath("/");

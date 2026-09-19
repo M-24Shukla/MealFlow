@@ -6,8 +6,13 @@ import { db } from "../db/client.js";
 import { materializeMealOccurrence } from "../db/domain.js";
 import {
   attendanceOverrides,
+  dinerDietaryPreferences,
+  dinerItemAttendanceOverrides,
+  dinerMenuItemAbsences,
   feedback,
+  mealOccurrenceItems,
   mealOccurrences,
+  menuItems,
   membershipRoles,
   memberships,
   recurringAbsences,
@@ -34,6 +39,10 @@ const recurringAbsenceInput = z.object({
   ),
 });
 const attendanceInput = z.object({ attendance: z.enum(["PRESENT", "ABSENT"]) });
+const onboardingInput = z.object({
+  absentMenuItemIds: z.array(z.string().uuid()),
+  dietaryCategories: z.array(z.enum(["VEGAN", "VEG", "EGG", "NON_VEG"])),
+});
 const vacationInput = z.object({
   start: date,
   startMeal: z.enum(mealTypes),
@@ -100,6 +109,193 @@ function vacationAbsences(
 }
 
 export const attendanceRoutes = new Hono<{ Variables: AppVariables }>();
+
+attendanceRoutes.get("/:groupId/my/onboarding", async (context) => {
+  const groupId = context.req.param("groupId");
+  const { membership } = await requireGroupRole(context, groupId, ["CONSUMER"]);
+  const [[onboarding], absences, dietaryPreferences] = await Promise.all([
+    db
+      .select({ completedAt: memberships.dinerOnboardingCompletedAt })
+      .from(memberships)
+      .where(eq(memberships.id, membership.id))
+      .limit(1),
+    db
+      .select({ menuItemId: dinerMenuItemAbsences.menuItemId })
+      .from(dinerMenuItemAbsences)
+      .where(eq(dinerMenuItemAbsences.membershipId, membership.id)),
+    db
+      .select({ category: dinerDietaryPreferences.category })
+      .from(dinerDietaryPreferences)
+      .where(eq(dinerDietaryPreferences.membershipId, membership.id)),
+  ]);
+  return context.json({
+    completed: Boolean(onboarding?.completedAt),
+    absentMenuItemIds: absences.map(({ menuItemId }) => menuItemId),
+    dietaryCategories: dietaryPreferences.map(({ category }) => category),
+  });
+});
+
+attendanceRoutes.put("/:groupId/my/onboarding", async (context) => {
+  const groupId = context.req.param("groupId");
+  const { membership } = await requireGroupRole(context, groupId, ["CONSUMER"]);
+  const payload = await readJson(context.req.raw, onboardingInput);
+  const absentMenuItemIds = [...new Set(payload.absentMenuItemIds)];
+  const dietaryCategories = [...new Set(payload.dietaryCategories)];
+  if (absentMenuItemIds.length) {
+    const items = await db
+      .select({ id: menuItems.id })
+      .from(menuItems)
+      .innerJoin(weeklyMenus, eq(menuItems.menuId, weeklyMenus.id))
+      .where(
+        and(
+          eq(weeklyMenus.groupId, groupId),
+          inArray(menuItems.id, absentMenuItemIds),
+        ),
+      );
+    if (items.length !== absentMenuItemIds.length) {
+      throw new HTTPException(400, {
+        message: "Every selected dish must belong to this group.",
+      });
+    }
+  }
+  await db.transaction(async (tx) => {
+    await tx
+      .delete(dinerMenuItemAbsences)
+      .where(eq(dinerMenuItemAbsences.membershipId, membership.id));
+    await tx
+      .delete(dinerDietaryPreferences)
+      .where(eq(dinerDietaryPreferences.membershipId, membership.id));
+    if (absentMenuItemIds.length) {
+      await tx.insert(dinerMenuItemAbsences).values(
+        absentMenuItemIds.map((menuItemId) => ({
+          membershipId: membership.id,
+          menuItemId,
+        })),
+      );
+    }
+    if (dietaryCategories.length) {
+      await tx.insert(dinerDietaryPreferences).values(
+        dietaryCategories.map((category) => ({
+          membershipId: membership.id,
+          category,
+        })),
+      );
+    }
+    await tx
+      .update(memberships)
+      .set({ dinerOnboardingCompletedAt: new Date() })
+      .where(eq(memberships.id, membership.id));
+  });
+  return context.json({
+    completed: true,
+    absentMenuItemIds,
+    dietaryCategories,
+  });
+});
+
+attendanceRoutes.get("/:groupId/my/item-attendance", async (context) => {
+  const groupId = context.req.param("groupId");
+  const { membership } = await requireGroupRole(context, groupId, ["CONSUMER"]);
+  const mealDate = date.safeParse(context.req.query("date"));
+  if (!mealDate.success) {
+    throw new HTTPException(400, { message: "Use a valid YYYY-MM-DD date." });
+  }
+  const [recurringAbsences, overrides] = await Promise.all([
+    db
+      .select({ itemId: dinerMenuItemAbsences.menuItemId })
+      .from(dinerMenuItemAbsences)
+      .where(eq(dinerMenuItemAbsences.membershipId, membership.id)),
+    db
+      .select({
+        itemId: dinerItemAttendanceOverrides.itemId,
+        mealType: dinerItemAttendanceOverrides.mealType,
+        attendance: dinerItemAttendanceOverrides.attendance,
+      })
+      .from(dinerItemAttendanceOverrides)
+      .where(
+        and(
+          eq(dinerItemAttendanceOverrides.membershipId, membership.id),
+          eq(dinerItemAttendanceOverrides.mealDate, mealDate.data),
+        ),
+      ),
+  ]);
+  return context.json({
+    recurringAbsentItemIds: recurringAbsences.map(({ itemId }) => itemId),
+    overrides,
+  });
+});
+
+attendanceRoutes.put(
+  "/:groupId/my/item-attendance/:date/:mealType/:itemId",
+  async (context) => {
+    const groupId = context.req.param("groupId");
+    const { membership } = await requireGroupRole(context, groupId, [
+      "CONSUMER",
+    ]);
+    const { mealDate, mealType } = mealParams(context);
+    const itemId = z.string().uuid().safeParse(context.req.param("itemId"));
+    if (!itemId.success) {
+      throw new HTTPException(400, { message: "Invalid dish." });
+    }
+    const payload = await readJson(context.req.raw, attendanceInput);
+    const [templateItem, occurrenceItem] = await Promise.all([
+      db
+        .select({ id: menuItems.id })
+        .from(menuItems)
+        .innerJoin(weeklyMenus, eq(menuItems.menuId, weeklyMenus.id))
+        .where(
+          and(
+            eq(menuItems.id, itemId.data),
+            eq(weeklyMenus.groupId, groupId),
+            eq(weeklyMenus.weekday, isoWeekday(mealDate)),
+            eq(weeklyMenus.mealType, mealType),
+          ),
+        )
+        .limit(1),
+      db
+        .select({ id: mealOccurrenceItems.id })
+        .from(mealOccurrenceItems)
+        .innerJoin(
+          mealOccurrences,
+          eq(mealOccurrenceItems.occurrenceId, mealOccurrences.id),
+        )
+        .where(
+          and(
+            eq(mealOccurrenceItems.id, itemId.data),
+            eq(mealOccurrences.groupId, groupId),
+            eq(mealOccurrences.mealDate, mealDate),
+            eq(mealOccurrences.mealType, mealType),
+          ),
+        )
+        .limit(1),
+    ]);
+    if (!templateItem.length && !occurrenceItem.length) {
+      throw new HTTPException(404, {
+        message: "The selected dish is not part of this meal.",
+      });
+    }
+    const [override] = await db
+      .insert(dinerItemAttendanceOverrides)
+      .values({
+        membershipId: membership.id,
+        mealDate,
+        mealType,
+        itemId: itemId.data,
+        attendance: payload.attendance,
+      })
+      .onConflictDoUpdate({
+        target: [
+          dinerItemAttendanceOverrides.membershipId,
+          dinerItemAttendanceOverrides.mealDate,
+          dinerItemAttendanceOverrides.mealType,
+          dinerItemAttendanceOverrides.itemId,
+        ],
+        set: { attendance: payload.attendance, updatedAt: new Date() },
+      })
+      .returning();
+    return context.json(override);
+  },
+);
 
 attendanceRoutes.get("/:groupId/my/recurring-absences", async (context) => {
   const groupId = context.req.param("groupId");

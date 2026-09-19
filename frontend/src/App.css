@@ -236,12 +236,33 @@ fieldset input {
 .join-requests {
   margin-top: 32px;
 }
-.diner-action-workspace {
-  grid-template-columns: minmax(0, 1fr);
+.action-items-workspace {
+  display: block;
   margin-bottom: 24px;
 }
-.diner-action-workspace .panel {
-  max-width: 620px;
+.cook-action-items {
+  grid-column: 1 / -1;
+  margin: 0;
+  max-width: none;
+  padding: 0;
+}
+.action-items-workspace > h2 {
+  font-family: Georgia, serif;
+  font-size: 1.7rem;
+  font-weight: 500;
+  margin: 0 0 16px;
+}
+.action-items-columns {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.action-items-columns .panel {
+  min-width: 0;
+}
+.action-items-columns .panel > h3 {
+  font-size: 1.35rem;
+  margin-bottom: 14px;
 }
 .group-landing {
   max-width: 1120px;
@@ -260,6 +281,24 @@ fieldset input {
   display: flex;
   gap: 18px;
   justify-content: space-between;
+}
+.group-title-actions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+.tour-button {
+  white-space: nowrap;
+}
+.leave-group-button {
+  align-items: center;
+  display: inline-flex;
+  gap: 7px;
+  white-space: nowrap;
+}
+.leave-group-button svg {
+  height: 18px;
+  width: 18px;
 }
 .group-join-qr {
   flex: 0 0 auto;
@@ -294,7 +333,12 @@ fieldset input {
   text-align: center;
 }
 .cook-leave-schedule {
-  margin-top: 24px;
+  margin-top: 0;
+}
+.cook-leave-wrapper {
+  margin: 0 auto 24px;
+  max-width: 1120px;
+  padding: 0 28px;
 }
 .back-button {
   margin: 0 0 26px;
@@ -413,6 +457,192 @@ fieldset input {
 }
 .daily-menu > .secondary {
   margin-bottom: 14px;
+}
+.attendance-toggle {
+  align-items: center;
+  background: transparent;
+  border: 1px solid #aab5c2;
+  border-radius: 999px;
+  color: #74869a;
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  gap: 7px;
+  padding: 7px 10px;
+}
+.attendance-toggle.is-present {
+  background: #e9f3ff;
+  border-color: #2774c7;
+  color: #1768bd;
+}
+.attendance-hand {
+  height: 21px;
+  width: 21px;
+}
+.meal-attendance-toggle {
+  margin-bottom: 14px;
+}
+.dish-actions .item-attendance-toggle {
+  border-radius: 50%;
+  padding: 5px;
+}
+.item-attendance-toggle:disabled {
+  cursor: not-allowed;
+}
+.diner-tour-backdrop {
+  z-index: 20;
+}
+.diner-tour {
+  max-height: calc(100vh - 48px);
+  max-width: 680px;
+  overflow: auto;
+  position: relative;
+  width: 100%;
+}
+.diner-tour h2 {
+  font-size: 2rem;
+  margin-bottom: 10px;
+}
+.diner-tour-close {
+  position: absolute;
+  right: 22px;
+  top: 18px;
+}
+.diner-tour label.onboarding-select-all {
+  align-items: center;
+  border-bottom: 1px solid #e1ddd0;
+  display: flex;
+  font-weight: 800;
+  gap: 8px;
+  padding: 14px 0;
+}
+.dietary-preference-list {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 24px 0 32px;
+}
+.diner-tour .dietary-preference-list label {
+  align-items: center;
+  background: #f7f4eb;
+  border: 1px solid #e1ddd0;
+  border-radius: 10px;
+  display: flex;
+  font-weight: 700;
+  gap: 10px;
+  padding: 14px;
+}
+.onboarding-menu-list {
+  margin-bottom: 18px;
+  max-height: 44vh;
+  overflow: auto;
+}
+.onboarding-day {
+  padding: 18px 0;
+}
+.onboarding-day + .onboarding-day {
+  border-top: 1px solid #d8d3c6;
+  margin-top: 18px;
+  padding-top: 28px;
+}
+.onboarding-day h3 {
+  font-family: Georgia, serif;
+  font-size: 1.45rem;
+  margin: 0;
+  text-align: left;
+}
+.onboarding-day-heading {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.diner-tour .onboarding-menu-list .onboarding-scope-select {
+  color: #425f53;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+.onboarding-day-meals {
+  margin-left: 22px;
+}
+.onboarding-meal {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.onboarding-meal + .onboarding-meal {
+  margin-top: 22px;
+}
+.onboarding-meal-heading {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.onboarding-meal h4 {
+  font-size: 1rem;
+  margin: 0;
+}
+.diner-tour .onboarding-menu-list .meal-scope-select {
+  margin-left: 16px;
+  text-align: right;
+}
+.onboarding-dishes {
+  display: grid;
+  gap: 8px;
+  margin-left: 14px;
+}
+.onboarding-day-empty {
+  margin: 0;
+  padding: 12px 0;
+}
+.onboarding-day-actions {
+  display: flex;
+  gap: 12px;
+  padding-bottom: 0;
+}
+.onboarding-day-actions .primary {
+  margin-left: auto;
+}
+.diner-tour .onboarding-menu-list label {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  font-weight: 500;
+  margin: 0;
+}
+.diner-tour input[type="checkbox"] {
+  accent-color: #1675e8;
+  flex: 0 0 18px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  width: 18px;
+}
+.tour-copy {
+  color: #425f53;
+  font-size: 1.12rem;
+  line-height: 1.7;
+  min-height: 120px;
+}
+.tour-progress {
+  display: flex;
+  gap: 7px;
+  margin: 24px 0;
+}
+.tour-progress span {
+  background: #d9d8d1;
+  border-radius: 999px;
+  flex: 1;
+  height: 6px;
+}
+.tour-progress span.is-active {
+  background: #2774c7;
+}
+.tour-actions {
+  display: flex;
+  justify-content: space-between;
+  padding-bottom: 0;
 }
 .dish-feedback label {
   display: grid;
@@ -810,6 +1040,12 @@ button:disabled {
 .action-item-row > span {
   min-width: 0;
 }
+.action-item-due {
+  color: #597064;
+  display: block;
+  font-size: 0.78rem;
+  margin-top: 4px;
+}
 .action-item-info summary {
   align-items: center;
   border: 1px solid #d5d1c7;
@@ -859,6 +1095,12 @@ button:disabled {
   .workspace {
     grid-template-columns: 1fr;
   }
+  .action-items-columns {
+    grid-template-columns: 1fr;
+  }
+  .dietary-preference-list {
+    grid-template-columns: 1fr;
+  }
   .workflow {
     gap: 1px;
     padding-bottom: 70px;
@@ -869,5 +1111,26 @@ button:disabled {
   }
   .input-row {
     flex-direction: column;
+  }
+  .group-title-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .group-title-actions {
+    width: 100%;
+  }
+  .onboarding-day-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .onboarding-meal-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .diner-tour .onboarding-menu-list .meal-scope-select {
+    margin-left: 0;
+    text-align: left;
   }
 }

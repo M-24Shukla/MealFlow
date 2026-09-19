@@ -10,8 +10,10 @@ import {
   mealTypes,
 } from "../lib/meal";
 import type { Group, WeeklyMenu } from "../lib/types";
-import { ActionItemList, type ActionItem } from "./ActionItemList";
+import { CookOnboarding } from "./CookOnboarding";
+import { DinerActionItems } from "./DinerActionItems";
 import { GroupJoinQr } from "./GroupJoinQr";
+import { LeaveGroupButton } from "./LeaveGroupButton";
 import { RecipeButton } from "./RecipeButton";
 
 type Preparation = {
@@ -21,9 +23,9 @@ type Preparation = {
     name: string;
     recipeUrl: string | null;
     status: string;
+    expectedDiners: number;
   }[];
   headcount: number;
-  actions: ActionItem[];
 };
 type Leave = {
   id: string;
@@ -47,6 +49,7 @@ type CookWorkspaceProps = {
   run: (work: () => Promise<void>) => Promise<void>;
   onMessage: (message: string) => void;
   onBack: () => void;
+  onLeave: () => void;
 };
 
 export function CookWorkspace({
@@ -57,6 +60,7 @@ export function CookWorkspace({
   run,
   onMessage,
   onBack,
+  onLeave,
 }: CookWorkspaceProps) {
   const [selectedMeal, setSelectedMeal] = useState(() => currentMealType());
   const [menuDate, setMenuDate] = useState(() => new Date());
@@ -66,6 +70,11 @@ export function CookWorkspace({
     "UPCOMING" | "PRESENT" | "PAST"
   >("UPCOMING");
   const [editingLeave, setEditingLeave] = useState<LeaveRange | null>(null);
+  const [menuHeadcounts, setMenuHeadcounts] = useState<Record<string, number>>(
+    {},
+  );
+  const [tourOpen, setTourOpen] = useState(false);
+  const [tourRequired, setTourRequired] = useState(false);
 
   const dailyMenus = useMemo(() => {
     const date = new Date();
@@ -94,6 +103,14 @@ export function CookWorkspace({
       .then((result) => setLeaves(result.leaves))
       .catch(() => setLeaves([]));
   }, [group.id]);
+  useEffect(() => {
+    void api<{ completed: boolean }>(`/groups/${group.id}/my/cook-onboarding`)
+      .then(({ completed }) => {
+        setTourRequired(!completed);
+        setTourOpen(!completed);
+      })
+      .catch(() => undefined);
+  }, [group.id]);
 
   const activeMeal = dailyMenus.some((menu) => menu.mealType === selectedMeal)
     ? selectedMeal
@@ -101,17 +118,36 @@ export function CookWorkspace({
   const selectedPreparation = preparations.find(
     (preparation) => preparation.occurrence.mealType === activeMeal,
   );
-  const allActionItems = preparations.flatMap(
-    (preparation) => preparation.actions,
-  );
   const selectedWeekday = ((menuDate.getDay() + 6) % 7) + 1;
-  const visibleMenus = menus
-    .filter((menu) => menu.weekday === selectedWeekday && menu.items.length)
-    .sort(
-      (left, right) => mealIndex(left.mealType) - mealIndex(right.mealType),
-    );
+  const visibleMenus = useMemo(
+    () =>
+      menus
+        .filter((menu) => menu.weekday === selectedWeekday && menu.items.length)
+        .sort(
+          (left, right) => mealIndex(left.mealType) - mealIndex(right.mealType),
+        ),
+    [menus, selectedWeekday],
+  );
   const isToday = menuDate.toDateString() === new Date().toDateString();
   const currentMenuMeal = isToday ? currentMealType() : null;
+  useEffect(() => {
+    void Promise.all(
+      visibleMenus.map(async (menu) => ({
+        mealType: menu.mealType,
+        result: await api<{ expected: number }>(
+          `/groups/${group.id}/headcount?date=${dateValue(menuDate)}&mealType=${menu.mealType}`,
+        ),
+      })),
+    )
+      .then((results) =>
+        setMenuHeadcounts(
+          Object.fromEntries(
+            results.map(({ mealType, result }) => [mealType, result.expected]),
+          ),
+        ),
+      )
+      .catch(() => setMenuHeadcounts({}));
+  }, [group.id, menuDate, visibleMenus]);
   const leaveRanges = useMemo(() => {
     const sortedLeaves = [...leaves].sort(
       (left, right) =>
@@ -164,82 +200,6 @@ export function CookWorkspace({
       );
     });
 
-  const addActionItem = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    void run(async () => {
-      if (!selectedPreparation) return;
-      const result = await api<{ item: ActionItem }>(
-        `/groups/${group.id}/action-items?date=${selectedPreparation.occurrence.mealDate}&mealType=${selectedPreparation.occurrence.mealType}`,
-        { method: "POST", body: JSON.stringify({ text: form.get("text") }) },
-      );
-      setPreparations((current) =>
-        current.map((preparation) =>
-          preparation.occurrence.mealType === activeMeal
-            ? { ...preparation, actions: [...preparation.actions, result.item] }
-            : preparation,
-        ),
-      );
-      event.currentTarget.reset();
-      onMessage("Action item added.");
-    });
-  };
-
-  const updateActionItem = (id: string, completed: boolean) =>
-    void run(async () => {
-      const result = await api<{ item: ActionItem }>(
-        `/groups/${group.id}/action-items/${id}`,
-        { method: "PATCH", body: JSON.stringify({ completed }) },
-      );
-      setPreparations((current) =>
-        current.map((preparation) => ({
-          ...preparation,
-          actions: preparation.actions.map((item) =>
-            item.id === id ? result.item : item,
-          ),
-        })),
-      );
-      onMessage(
-        completed
-          ? "Action item completed."
-          : "Action item returned to pending.",
-      );
-    });
-
-  const editActionItem = (item: ActionItem) => {
-    const text = window.prompt("Update action item", item.text)?.trim();
-    if (!text || text === item.text) return;
-    void run(async () => {
-      const result = await api<{ item: ActionItem }>(
-        `/groups/${group.id}/action-items/${item.id}`,
-        { method: "PATCH", body: JSON.stringify({ text }) },
-      );
-      setPreparations((current) =>
-        current.map((preparation) => ({
-          ...preparation,
-          actions: preparation.actions.map((action) =>
-            action.id === item.id ? result.item : action,
-          ),
-        })),
-      );
-      onMessage("Action item updated.");
-    });
-  };
-
-  const deleteActionItem = (id: string) => {
-    if (!window.confirm("Delete this action item?")) return;
-    void run(async () => {
-      await api(`/groups/${group.id}/action-items/${id}`, { method: "DELETE" });
-      setPreparations((current) =>
-        current.map((preparation) => ({
-          ...preparation,
-          actions: preparation.actions.filter((item) => item.id !== id),
-        })),
-      );
-      onMessage("Action item deleted.");
-    });
-  };
-
   const recordLeave = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -285,6 +245,31 @@ export function CookWorkspace({
     });
   };
 
+  const setMealAvailability = (mealType: string, available: boolean) =>
+    void run(async () => {
+      const mealDate = dateValue(menuDate);
+      const payload = {
+        start: mealDate,
+        startMeal: mealType,
+        end: mealDate,
+        endMeal: mealType,
+        reason: null,
+      };
+      await api(`/groups/${group.id}/my/leaves`, {
+        method: available ? "DELETE" : "POST",
+        body: JSON.stringify(payload),
+      });
+      const result = await api<{ leaves: Leave[] }>(
+        `/groups/${group.id}/my/leaves`,
+      );
+      setLeaves(result.leaves);
+      onMessage(
+        available
+          ? `${mealName(mealType)} marked available.`
+          : `${mealName(mealType)} marked not available.`,
+      );
+    });
+
   return (
     <section className="workspace cook-workspace">
       <header className="cook-header">
@@ -294,7 +279,19 @@ export function CookWorkspace({
         <p className="eyebrow">{group.timezone}</p>
         <div className="group-title-row">
           <h1>{group.name}</h1>
-          <GroupJoinQr group={group} />
+          <div className="group-title-actions">
+            <button
+              className="secondary tour-button"
+              onClick={() => {
+                setTourRequired(false);
+                setTourOpen(true);
+              }}
+            >
+              Start cook tour
+            </button>
+            <GroupJoinQr group={group} />
+            <LeaveGroupButton busy={busy} onLeave={onLeave} />
+          </div>
         </div>
       </header>
       <div className="cook-top-grid">
@@ -318,19 +315,22 @@ export function CookWorkspace({
           {selectedPreparation && (
             <article className="cook-daily-menu">
               <h3>{mealName(selectedPreparation.occurrence.mealType)}</h3>
-              <p>Expected diners: {selectedPreparation.headcount}</p>
+              <p className="meal-headcount">
+                <span aria-hidden="true">🙋🏻</span> ×{" "}
+                {selectedPreparation.headcount}
+              </p>
               {selectedPreparation.items.map((item) => (
-                <div className="preparation-item" key={item.id}>
+                <div
+                  className={`preparation-item${item.status === "PREPARED" ? " is-prepared" : ""}`}
+                  key={item.id}
+                >
                   <div className="preparation-item-details">
-                    <button
-                      className={`preparation-toggle${item.status === "PREPARED" ? " is-prepared" : ""}`}
-                      role="switch"
-                      aria-label={`${item.name}: ${item.status === "PREPARED" ? "prepared" : "not prepared"}`}
-                      aria-checked={item.status === "PREPARED"}
-                      title={
-                        item.status === "PREPARED" ? "Prepared" : "Not prepared"
-                      }
-                      onClick={() =>
+                    <input
+                      className="preparation-checkbox"
+                      type="checkbox"
+                      aria-label={`Mark ${item.name} as ${item.status === "PREPARED" ? "not prepared" : "prepared"}`}
+                      checked={item.status === "PREPARED"}
+                      onChange={() =>
                         updatePreparation(
                           item.id,
                           item.status === "PREPARED"
@@ -339,13 +339,12 @@ export function CookWorkspace({
                         )
                       }
                       disabled={busy}
-                    >
-                      <span aria-hidden="true">
-                        {item.status === "PREPARED" ? "✓" : "×"}
-                      </span>
-                    </button>
+                    />
                     <strong>{item.name}</strong>
                     <RecipeButton recipeUrl={item.recipeUrl} />
+                    <span className="dish-headcount">
+                      <span aria-hidden="true">🙋🏻</span> × {item.expectedDiners}
+                    </span>
                   </div>
                 </div>
               ))}
@@ -353,33 +352,6 @@ export function CookWorkspace({
           )}
           {!dailyMenus.length && (
             <p className="empty">No meals are configured for this date.</p>
-          )}
-        </div>
-        <div className="panel">
-          <h2>Grocery and action items</h2>
-          {selectedPreparation ? (
-            <>
-              <form onSubmit={addActionItem}>
-                <label>
-                  Item to source or action to complete
-                  <textarea name="text" required />
-                </label>
-                <button className="secondary" disabled={busy}>
-                  Add action item
-                </button>
-              </form>
-              <ActionItemList
-                items={allActionItems}
-                currentUserName={currentUserName}
-                onCompletionChange={updateActionItem}
-                onEdit={editActionItem}
-                onDelete={deleteActionItem}
-              />
-            </>
-          ) : (
-            <p className="empty">
-              Choose a configured meal to manage its action items.
-            </p>
           )}
         </div>
       </div>
@@ -414,7 +386,34 @@ export function CookWorkspace({
               className={`daily-menu${menu.mealType === currentMenuMeal ? " is-current-meal" : ""}`}
               key={menu.id}
             >
-              <h3>{mealName(menu.mealType)}</h3>
+              <div className="cook-meal-heading">
+                <h3>{mealName(menu.mealType)}</h3>
+                <span
+                  className="meal-headcount"
+                  aria-label={`${menuHeadcounts[menu.mealType] ?? 0} diners`}
+                >
+                  <span aria-hidden="true">🙋🏻</span> ×{" "}
+                  {menuHeadcounts[menu.mealType] ?? 0}
+                </span>
+              </div>
+              {(() => {
+                const unavailable = leaves.some(
+                  (leave) =>
+                    leave.mealDate === dateValue(menuDate) &&
+                    leave.mealType === menu.mealType,
+                );
+                return (
+                  <button
+                    className="secondary cook-meal-availability"
+                    onClick={() =>
+                      setMealAvailability(menu.mealType, unavailable)
+                    }
+                    disabled={busy}
+                  >
+                    {unavailable ? "Available this day" : "Not available"}
+                  </button>
+                );
+              })()}
               {menu.mealType === currentMenuMeal && (
                 <p className="current-meal-marker">Current meal</p>
               )}
@@ -433,6 +432,14 @@ export function CookWorkspace({
           <p className="empty">No meals are configured for this date.</p>
         )}
       </div>
+      <DinerActionItems
+        busy={busy}
+        group={group}
+        currentUserName={currentUserName}
+        embedded
+        run={run}
+        onMessage={onMessage}
+      />
       <div className="panel cook-availability">
         <h2>Cook availability</h2>
         <form
@@ -562,6 +569,26 @@ export function CookWorkspace({
             </div>
           ))}
       </div>
+      {tourOpen && (
+        <CookOnboarding
+          busy={busy}
+          required={tourRequired}
+          onClose={() => {
+            setTourOpen(false);
+            setTourRequired(false);
+          }}
+          onFinish={async () => {
+            let saved = false;
+            await run(async () => {
+              await api(`/groups/${group.id}/my/cook-onboarding`, {
+                method: "PUT",
+              });
+              saved = true;
+            });
+            return saved;
+          }}
+        />
+      )}
     </section>
   );
 }

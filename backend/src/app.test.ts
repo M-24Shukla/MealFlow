@@ -784,14 +784,14 @@ describe.runIf(runIntegration)("group role management", () => {
     expect(preparation.updatedByMembershipId).toBeTruthy();
 
     const action = await app.request(
-      `http://localhost/api/v1/groups/${group.id}/action-items?date=2026-08-31&mealType=LUNCH`,
+      `http://localhost/api/v1/groups/${group.id}/action-items`,
       {
         method: "POST",
         headers: {
           "content-type": "application/json",
           cookie: producer.cookie,
         },
-        body: JSON.stringify({ text: "Buy cumin" }),
+        body: JSON.stringify({ text: "Buy cumin", dueDate: "2099-08-31" }),
       },
     );
     expect(action.status).toBe(201);
