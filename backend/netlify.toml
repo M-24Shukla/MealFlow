@@ -1,6 +1,6 @@
 [build]
   base = "."
-  command = "npm --prefix backend ci && npm --prefix backend run build && mkdir -p backend/public"
+  command = "npm --prefix backend ci --include=dev && npm --prefix backend run build && mkdir -p backend/public"
   publish = "backend/public"
 
 [build.environment]
