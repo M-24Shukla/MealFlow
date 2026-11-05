@@ -5,7 +5,9 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${base}${path}`, {
     credentials: "include",
     headers: {
-      "Content-Type": "application/json",
+      ...(options?.body !== undefined
+        ? { "Content-Type": "application/json" }
+        : {}),
       ...(options?.headers ?? {}),
     },
     ...options,

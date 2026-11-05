@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import "../styles/cook.css";
 import { api } from "../lib/api";
+import { loadCookPreparation, type WorkspaceDay } from "../lib/workspace";
 import { currentMealType, dateValue, mealIndex, mealName } from "../lib/meal";
 import type { Group, WeeklyMenu } from "../lib/types";
 import { CookAvailability, type Leave } from "./CookAvailability";
@@ -11,19 +12,10 @@ import { GroupJoinQr } from "./GroupJoinQr";
 import { LeaveGroupButton } from "./LeaveGroupButton";
 import { RecipeButton } from "./RecipeButton";
 
-type Preparation = {
-  occurrence: { mealDate: string; mealType: string };
-  items: {
-    id: string;
-    name: string;
-    recipeUrl: string | null;
-    status: string;
-    expectedDiners: number;
-  }[];
-  headcount: number;
-};
 type CookWorkspaceProps = {
   busy: boolean;
+  initialDay: WorkspaceDay;
+  onDateChange: (date: string) => void;
   group: Group;
   menus: WeeklyMenu[];
   currentUserName: string;
@@ -35,6 +27,8 @@ type CookWorkspaceProps = {
 
 export function CookWorkspace({
   busy,
+  initialDay,
+  onDateChange,
   group,
   menus,
   currentUserName,
@@ -43,12 +37,22 @@ export function CookWorkspace({
   onBack,
   onLeave,
 }: CookWorkspaceProps) {
-  const [selectedMeal, setSelectedMeal] = useState(() => currentMealType());
-  const [today, setToday] = useState(() => dateValue(new Date()));
-  const [preparations, setPreparations] = useState<Preparation[]>([]);
-  const [leaves, setLeaves] = useState<Leave[]>([]);
-  const [tourOpen, setTourOpen] = useState(false);
-  const [tourRequired, setTourRequired] = useState(false);
+  const [selectedMeal, setSelectedMeal] = useState(
+    () => initialDay.producer?.mealType ?? currentMealType(),
+  );
+  const [today, setToday] = useState(initialDay.date);
+  const [preparations, setPreparations] = useState<
+    Awaited<ReturnType<typeof loadCookPreparation>>[]
+  >(initialDay.producer?.preparation ? [initialDay.producer.preparation] : []);
+  const [leaves, setLeaves] = useState<Leave[]>(
+    initialDay.producer?.leaves ?? [],
+  );
+  const [tourOpen, setTourOpen] = useState(
+    !initialDay.producer?.onboardingCompleted,
+  );
+  const [tourRequired, setTourRequired] = useState(
+    !initialDay.producer?.onboardingCompleted,
+  );
 
   useEffect(() => {
     const now = new Date();
@@ -58,11 +62,15 @@ export function CookWorkspace({
       now.getDate() + 1,
     );
     const timer = window.setTimeout(
-      () => setToday(dateValue(new Date())),
+      () => {
+        const date = dateValue(new Date());
+        setToday(date);
+        onDateChange(date);
+      },
       nextDay.getTime() - now.getTime() + 50,
     );
     return () => window.clearTimeout(timer);
-  }, [today]);
+  }, [today, onDateChange]);
 
   const dailyMenus = useMemo(() => {
     const date = new Date(`${today}T12:00:00`);
@@ -74,54 +82,36 @@ export function CookWorkspace({
       );
   }, [menus, today]);
 
+  const activeMeal = dailyMenus.some((menu) => menu.mealType === selectedMeal)
+    ? selectedMeal
+    : (dailyMenus[0]?.mealType ?? "LUNCH");
   useEffect(() => {
+    if (!dailyMenus.length) return;
+    if (initialDay.producer?.mealType === activeMeal) return;
     let current = true;
     void run(async () => {
-      const data = await Promise.all(
-        dailyMenus.map((menu) =>
-          api<Preparation>(
-            `/groups/${group.id}/preparation?date=${today}&mealType=${menu.mealType}`,
-          ),
-        ),
-      );
-      if (current) setPreparations(data);
+      const data = await loadCookPreparation(group.id, today, activeMeal);
+      if (current)
+        setPreparations((previous) => [
+          ...previous.filter((item) => item.occurrence.mealType !== activeMeal),
+          data,
+        ]);
     }, false);
     return () => {
       current = false;
     };
-  }, [dailyMenus, group.id, run, today]);
-  useEffect(() => {
-    let current = true;
-    void api<{ leaves: Leave[] }>(`/groups/${group.id}/my/leaves`)
-      .then((result) => {
-        if (current) setLeaves(result.leaves);
-      })
-      .catch(() => {
-        if (current) setLeaves([]);
-      });
-    return () => {
-      current = false;
-    };
-  }, [group.id]);
-  useEffect(() => {
-    let current = true;
-    void api<{ completed: boolean }>(`/groups/${group.id}/my/cook-onboarding`)
-      .then(({ completed }) => {
-        if (!current) return;
-        setTourRequired(!completed);
-        setTourOpen(!completed);
-      })
-      .catch(() => undefined);
-    return () => {
-      current = false;
-    };
-  }, [group.id]);
-
-  const activeMeal = dailyMenus.some((menu) => menu.mealType === selectedMeal)
-    ? selectedMeal
-    : (dailyMenus[0]?.mealType ?? "LUNCH");
+  }, [
+    activeMeal,
+    dailyMenus.length,
+    group.id,
+    run,
+    today,
+    initialDay.producer,
+  ]);
   const selectedPreparation = preparations.find(
-    (preparation) => preparation.occurrence.mealType === activeMeal,
+    (preparation) =>
+      preparation.occurrence.mealDate === today &&
+      preparation.occurrence.mealType === activeMeal,
   );
   const updatePreparation = (id: string, status: "PREPARED" | "UNPREPARED") =>
     void run(async () => {
@@ -181,6 +171,10 @@ export function CookWorkspace({
               </select>
             </label>
           </div>
+          {initialDay.producer?.preparationError &&
+            initialDay.producer.mealType === activeMeal && (
+              <p className="empty">{initialDay.producer.preparationError}</p>
+            )}
           {selectedPreparation && (
             <article className="cook-daily-menu">
               <h3>{mealName(selectedPreparation.occurrence.mealType)}</h3>
@@ -230,6 +224,15 @@ export function CookWorkspace({
         menus={menus}
         leaves={leaves}
         today={today}
+        headcounts={initialDay.producer?.headcounts ?? {}}
+        run={run}
+        onMessage={onMessage}
+        onLeavesChange={setLeaves}
+      />
+      <CookAvailability
+        busy={busy}
+        group={group}
+        leaves={leaves}
         run={run}
         onMessage={onMessage}
         onLeavesChange={setLeaves}
@@ -241,14 +244,6 @@ export function CookWorkspace({
         embedded
         run={run}
         onMessage={onMessage}
-      />
-      <CookAvailability
-        busy={busy}
-        group={group}
-        leaves={leaves}
-        run={run}
-        onMessage={onMessage}
-        onLeavesChange={setLeaves}
       />
       {tourOpen && (
         <CookOnboarding

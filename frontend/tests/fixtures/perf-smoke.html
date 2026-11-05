@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Performance smoke fixture</title>
+  </head>
+  <body>
+    <pre id="trace" hidden></pre>
+    <div id="root"></div>
+    <script>
+      window.__requests = [];
+      const group = {
+        id: "fixture-group",
+        slug: "fixture",
+        name: "Fixture kitchen",
+        timezone: "Asia/Kolkata",
+        roles:
+          new URLSearchParams(location.search).get("role") === "producer"
+            ? ["PRODUCER"]
+            : ["ADMIN", "CONSUMER"],
+      };
+      const weeklyMenus = Array.from({ length: 7 }, (_, day) =>
+        ["LUNCH", "DINNER"].map((mealType) => ({
+          id: `menu-${day}-${mealType}`,
+          weekday: day + 1,
+          mealType,
+          items: [
+            {
+              id: `item-${day}-${mealType}`,
+              name: "Fixture rice",
+              category: "VEG",
+              recipeUrl: null,
+              notes: null,
+            },
+          ],
+        })),
+      ).flat();
+      window.fetch = async (input, options) => {
+        const requestUrl = new URL(input, location.href);
+        const path = requestUrl.pathname;
+        window.__requests.push({
+          path,
+          date: requestUrl.searchParams.get("date"),
+          status: requestUrl.searchParams.get("status"),
+          start: performance.now(),
+        });
+        document.getElementById("trace").textContent = JSON.stringify(
+          window.__requests,
+        );
+        const delay =
+          path.endsWith("/action-items") || path.endsWith("/my/leaves")
+            ? 350
+            : path.endsWith("/menus") ||
+                path.endsWith("/cook-leaves") ||
+                path.endsWith("/food-items")
+              ? 100
+              : 5;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        let body = {};
+        if (path.endsWith("/menus/import")) {
+          const payload = JSON.parse(options.body);
+          if (!payload.menus?.length) {
+            return new Response(
+              JSON.stringify({
+                error: { message: "menus: Include at least one menu." },
+              }),
+              { status: 400, headers: { "Content-Type": "application/json" } },
+            );
+          }
+          body = { imported: payload.menus.length };
+        } else if (path.endsWith("/workspace")) {
+          const date = new URL(input, location.href).searchParams.get("date");
+          body = {
+            date,
+            menus: weeklyMenus.filter(
+              (menu) =>
+                menu.weekday ===
+                ((new Date(`${date}T12:00:00`).getDay() + 6) % 7) + 1,
+            ),
+            cooks: { cookCount: 0, leaves: [] },
+            actionItems: [],
+            producer: group.roles.includes("PRODUCER")
+              ? {
+                  leaves: [],
+                  onboardingCompleted: true,
+                  mealType: "LUNCH",
+                  headcounts: { LUNCH: 4, DINNER: 6 },
+                  preparationError: null,
+                  preparation: {
+                    occurrence: { mealDate: date, mealType: "LUNCH" },
+                    items: [],
+                    headcount: 4,
+                  },
+                }
+              : null,
+            consumer: group.roles.includes("CONSUMER")
+              ? {
+                  weeklyMenus,
+                  vacations: [
+                    {
+                      id: "fixture-vacation",
+                      startDate: "2026-11-10",
+                      startMeal: "LUNCH",
+                      endDate: "2026-11-11",
+                      endMeal: "DINNER",
+                    },
+                  ],
+                  rules: [{ weekday: 4, mealType: "LUNCH" }],
+                  overrides: [],
+                  recurringAbsentItemIds: [],
+                  itemOverrides: [],
+                  onboardingCompleted: true,
+                }
+              : null,
+          };
+        } else if (path.endsWith("/workspace/admin")) {
+          body = {
+            requests: [],
+            members: [
+              {
+                membershipId: "self",
+                userId: "fixture-user",
+                displayName: "Fixture User",
+                email: "self@example.test",
+                roles: ["ADMIN", "CONSUMER"],
+                isCreator: false,
+              },
+              {
+                membershipId: "owner",
+                userId: "owner-user",
+                displayName: "Group Owner",
+                email: "owner@example.test",
+                roles: ["ADMIN", "CONSUMER"],
+                isCreator: true,
+              },
+              {
+                membershipId: "cook",
+                userId: "cook-user",
+                displayName: "Fixture Cook",
+                email: "cook@example.test",
+                roles: ["PRODUCER"],
+                isCreator: false,
+              },
+              {
+                membershipId: "diner",
+                userId: "diner-user",
+                displayName: "Fixture Diner",
+                email: "diner@example.test",
+                roles: ["CONSUMER"],
+                isCreator: false,
+              },
+              {
+                membershipId: "admin",
+                userId: "other-admin",
+                displayName: "Other Admin",
+                email: "admin@example.test",
+                roles: ["ADMIN", "CONSUMER"],
+                isCreator: false,
+              },
+            ],
+          };
+        } else if (path.endsWith("/workspace/preferences")) {
+          body = {
+            menus: weeklyMenus,
+            consumer: group.roles.includes("CONSUMER")
+              ? {
+                  rules: [],
+                  vacations: [],
+                  onboarding: {
+                    completed: true,
+                    absentMenuItemIds: [],
+                    dietaryCategories: [],
+                  },
+                }
+              : null,
+            producer: group.roles.includes("PRODUCER") ? { leaves: [] } : null,
+          };
+        } else if (path.endsWith("/preparation")) {
+          body = {
+            occurrence: {
+              mealDate: requestUrl.searchParams.get("date"),
+              mealType: requestUrl.searchParams.get("mealType"),
+            },
+            items: [],
+            headcount: 4,
+          };
+        } else if (path.endsWith("/action-items")) {
+          body = {
+            items:
+              requestUrl.searchParams.get("status") === "PENDING"
+                ? []
+                : [
+                    {
+                      id: "fixture-action",
+                      text: "Fixture completed task",
+                      completed: true,
+                      createdByName: "Fixture User",
+                      completedByName: "Fixture User",
+                      createdAt: "2026-11-05T06:00:00Z",
+                      completedAt: "2026-11-05T07:00:00Z",
+                      dueDate: "2026-11-05",
+                    },
+                  ],
+          };
+        } else if (path.endsWith("/my/leaves")) {
+          body = {
+            leaves: [
+              {
+                id: "fixture-leave",
+                mealDate: "2026-11-05",
+                mealType: "LUNCH",
+                reason: "Fixture leave plan",
+              },
+            ],
+          };
+        } else if (path.endsWith("/headcount")) {
+          body = { expected: 4 };
+        } else if (path.endsWith("/auth/me"))
+          body = {
+            user: {
+              id: "fixture-user",
+              email: "fixture@example.test",
+              displayName: "Fixture User",
+            },
+          };
+        else if (path.endsWith("/groups/mine")) body = { data: [group] };
+        else if (path.endsWith("/groups/my/join-requests")) body = { data: [] };
+        else if (path.endsWith("/cook-leaves"))
+          body = { cookCount: 0, leaves: [] };
+        else if (path.endsWith("/my/recurring-absences")) body = { rules: [] };
+        else if (path.endsWith("/my/vacations")) body = { vacations: [] };
+        else if (path.endsWith("/my/onboarding"))
+          body = {
+            completed: true,
+            absentMenuItemIds: [],
+            dietaryCategories: [],
+          };
+        else if (path.endsWith("/my/attendance")) body = { overrides: [] };
+        else if (path.endsWith("/my/item-attendance"))
+          body = { recurringAbsentItemIds: [], overrides: [] };
+        else body = { data: [] };
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      };
+    </script>
+    <script type="module">
+      import { createElement, Profiler, StrictMode } from "react";
+      import { createRoot } from "react-dom/client";
+      import App from "/src/App.tsx";
+      window.__commits = [];
+      createRoot(document.getElementById("root")).render(
+        createElement(
+          StrictMode,
+          null,
+          createElement(
+            Profiler,
+            {
+              id: "App",
+              onRender: (id, phase, actualDuration) =>
+                window.__commits.push({ id, phase, actualDuration }),
+            },
+            createElement(App),
+          ),
+        ),
+      );
+    </script>
+  </body>
+</html>

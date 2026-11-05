@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
+import { loadWorkspaceDay, type WorkspaceDay } from "../lib/workspace";
 import {
   currentMealType,
   dateValue,
@@ -16,6 +17,7 @@ type CookMenuProps = {
   menus: WeeklyMenu[];
   leaves: Leave[];
   today: string;
+  headcounts?: Record<string, number>;
   run: (work: () => Promise<void>, trackBusy?: boolean) => Promise<void>;
   onMessage: (message: string) => void;
   onLeavesChange: (leaves: Leave[]) => void;
@@ -27,14 +29,17 @@ export function CookMenu({
   menus,
   leaves,
   today,
+  headcounts = {},
   run,
   onMessage,
   onLeavesChange,
 }: CookMenuProps) {
   const [selectedDate, setSelectedDate] = useState(() => new Date());
-  const [menuHeadcounts, setMenuHeadcounts] = useState<Record<string, number>>(
-    {},
-  );
+  const [loadedDay, setLoadedDay] = useState<WorkspaceDay | null>(null);
+  const [menuError, setMenuError] = useState<{
+    date: string;
+    message: string;
+  } | null>(null);
   const menuDate = useMemo(
     () =>
       dateValue(selectedDate) < today
@@ -42,43 +47,46 @@ export function CookMenu({
         : selectedDate,
     [selectedDate, today],
   );
+  const selectedDay = dateValue(menuDate);
+  const isToday = selectedDay === today;
+  const dateData = loadedDay?.date === selectedDay ? loadedDay : null;
+  const loading = !isToday && !dateData && menuError?.date !== selectedDay;
+  const dateMenus = isToday ? menus : (dateData?.menus ?? []);
   const selectedWeekday = ((menuDate.getDay() + 6) % 7) + 1;
-  const visibleMenus = useMemo(
-    () =>
-      menus
-        .filter((menu) => menu.weekday === selectedWeekday && menu.items.length)
-        .sort(
-          (left, right) => mealIndex(left.mealType) - mealIndex(right.mealType),
-        ),
-    [menus, selectedWeekday],
-  );
-  const isToday = dateValue(menuDate) === today;
+  const visibleMenus = dateMenus
+    .filter((menu) => menu.weekday === selectedWeekday && menu.items.length)
+    .sort(
+      (left, right) => mealIndex(left.mealType) - mealIndex(right.mealType),
+    );
+  const dateLeaves = isToday ? leaves : (dateData?.producer?.leaves ?? []);
   const currentMenuMeal = isToday ? currentMealType() : null;
+  const menuHeadcounts = isToday
+    ? headcounts
+    : (dateData?.producer?.headcounts ?? {});
   useEffect(() => {
+    if (isToday) return;
     let current = true;
-    void Promise.all(
-      visibleMenus.map(async (menu) => ({
-        mealType: menu.mealType,
-        result: await api<{ expected: number }>(
-          `/groups/${group.id}/headcount?date=${dateValue(menuDate)}&mealType=${menu.mealType}`,
-        ),
-      })),
-    )
-      .then((results) => {
-        if (!current) return;
-        setMenuHeadcounts(
-          Object.fromEntries(
-            results.map(({ mealType, result }) => [mealType, result.expected]),
-          ),
-        );
+    void loadWorkspaceDay(group.id, selectedDay)
+      .then((data) => {
+        if (current) {
+          setLoadedDay(data);
+          setMenuError(null);
+        }
       })
-      .catch(() => {
-        if (current) setMenuHeadcounts({});
+      .catch((error: unknown) => {
+        if (current)
+          setMenuError({
+            date: selectedDay,
+            message:
+              error instanceof Error
+                ? error.message
+                : "Unable to load this menu.",
+          });
       });
     return () => {
       current = false;
     };
-  }, [group.id, menuDate, visibleMenus]);
+  }, [group.id, selectedDay, isToday]);
   const setMealAvailability = (mealType: string, available: boolean) =>
     void run(async () => {
       const mealDate = dateValue(menuDate);
@@ -97,6 +105,19 @@ export function CookMenu({
         `/groups/${group.id}/my/leaves`,
       );
       onLeavesChange(result.leaves);
+      setLoadedDay((current) =>
+        current?.date === mealDate && current.producer
+          ? {
+              ...current,
+              producer: {
+                ...current.producer,
+                leaves: result.leaves.filter(
+                  (leave) => leave.mealDate === mealDate,
+                ),
+              },
+            }
+          : current,
+      );
       onMessage(
         available
           ? `${mealName(mealType)} marked available.`
@@ -130,6 +151,14 @@ export function CookMenu({
           &gt;
         </button>
       </div>
+      {loading && (
+        <p className="empty" role="status">
+          Loading menu…
+        </p>
+      )}
+      {!isToday && !dateData && menuError?.date === selectedDay && (
+        <p role="alert">{menuError.message}</p>
+      )}
       <div className="daily-menu-grid">
         {visibleMenus.map((menu) => (
           <article
@@ -140,14 +169,18 @@ export function CookMenu({
               <h3>{mealName(menu.mealType)}</h3>
               <span
                 className="meal-headcount"
-                aria-label={`${menuHeadcounts[menu.mealType] ?? 0} diners`}
+                aria-label={
+                  menuHeadcounts[menu.mealType] === undefined
+                    ? "Diner count not loaded"
+                    : `${menuHeadcounts[menu.mealType]} diners`
+                }
               >
                 <span aria-hidden="true">🙋🏻</span> ×{" "}
-                {menuHeadcounts[menu.mealType] ?? 0}
+                {menuHeadcounts[menu.mealType] ?? "—"}
               </span>
             </div>
             {(() => {
-              const unavailable = leaves.some(
+              const unavailable = dateLeaves.some(
                 (leave) =>
                   leave.mealDate === dateValue(menuDate) &&
                   leave.mealType === menu.mealType,
@@ -178,7 +211,7 @@ export function CookMenu({
           </article>
         ))}
       </div>
-      {!visibleMenus.length && (
+      {!loading && (isToday || dateData) && !visibleMenus.length && (
         <p className="empty">No meals are configured for this date.</p>
       )}
     </div>

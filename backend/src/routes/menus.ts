@@ -1,10 +1,14 @@
+import {
+  loadMenus,
+  loadFoodItems,
+  loadMenuOverrides,
+} from "../db/group-reads.js";
 import { and, asc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { db } from "../db/client.js";
 import { materializeMealOccurrence } from "../db/domain.js";
-import { groupJoinedRows } from "../db/group-joined-rows.js";
 import {
   groups,
   mealOccurrenceItems,
@@ -16,11 +20,12 @@ import {
 import { isCalendarDate, isoWeekday } from "../lib/attendance.js";
 import { groupLocalTime, resolveActiveSchedule } from "../lib/active-meal.js";
 import { requireGroupMembership, requireGroupRole } from "../lib/group-auth.js";
+import { menuInput, menuImportInput } from "../lib/menu-import.js";
 import { readJson } from "../lib/http.js";
 import type { AppVariables } from "../lib/session.js";
 
 const mealTypes = ["BREAKFAST", "BRUNCH", "LUNCH", "SNACKS", "DINNER"] as const;
-const foodCategories = ["VEG", "NON_VEG", "EGG", "VEGAN"] as const;
+
 const time = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use HH:MM time.");
 const scheduleInput = z.object({
   entries: z.array(
@@ -30,21 +35,6 @@ const scheduleInput = z.object({
       startTime: time,
       endTime: time,
       enabled: z.boolean(),
-    }),
-  ),
-});
-const menuInput = z.object({
-  items: z.array(
-    z.object({
-      name: z.string().trim().min(1).max(120),
-      category: z.enum(foodCategories),
-      recipeUrl: z
-        .string()
-        .url()
-        .refine((url) => /^https?:\/\//.test(url), "Use an HTTP(S) recipe URL.")
-        .nullable()
-        .optional(),
-      notes: z.string().trim().max(1000).nullable().optional(),
     }),
   ),
 });
@@ -82,6 +72,37 @@ function assertValidSchedule(
       }
     }
   }
+}
+
+type MenuTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+async function saveWeeklyMenu(
+  tx: MenuTransaction,
+  groupId: string,
+  weekday: number,
+  mealType: (typeof mealTypes)[number],
+  items: z.infer<typeof menuInput>["items"],
+) {
+  const [saved] = await tx
+    .insert(weeklyMenus)
+    .values({ groupId, weekday, mealType })
+    .onConflictDoUpdate({
+      target: [weeklyMenus.groupId, weeklyMenus.weekday, weeklyMenus.mealType],
+      set: { updatedAt: new Date() },
+    })
+    .returning();
+  await tx.delete(menuItems).where(eq(menuItems.menuId, saved.id));
+  if (items.length) {
+    await tx.insert(menuItems).values(
+      items.map((item, sortOrder) => ({
+        ...item,
+        menuId: saved.id,
+        recipeUrl: item.recipeUrl ?? null,
+        notes: item.notes ?? null,
+        sortOrder,
+      })),
+    );
+  }
+  return saved;
 }
 
 export const menuRoutes = new Hono<{ Variables: AppVariables }>();
@@ -124,71 +145,15 @@ menuRoutes.get("/:groupId/menus", async (context) => {
       message: "weekday must be between 1 and 7.",
     });
   }
-  const rows = await db
-    .select({ parent: weeklyMenus, item: menuItems })
-    .from(weeklyMenus)
-    .leftJoin(menuItems, eq(menuItems.menuId, weeklyMenus.id))
-    .where(
-      weekday
-        ? and(
-            eq(weeklyMenus.groupId, groupId),
-            eq(weeklyMenus.weekday, Number(weekday)),
-          )
-        : eq(weeklyMenus.groupId, groupId),
-    )
-    .orderBy(
-      asc(weeklyMenus.weekday),
-      asc(weeklyMenus.mealType),
-      asc(menuItems.sortOrder),
-    );
-  const data = groupJoinedRows(rows);
-  return context.json({ data });
+  const result = await loadMenus(groupId, weekday);
+  return context.json({ data: result });
 });
 
 menuRoutes.get("/:groupId/food-items", async (context) => {
   const groupId = context.req.param("groupId");
   await requireGroupMembership(context, groupId);
-  const [templateItems, datedItems] = await Promise.all([
-    db
-      .select({
-        id: menuItems.id,
-        name: menuItems.name,
-        category: menuItems.category,
-        recipeUrl: menuItems.recipeUrl,
-        notes: menuItems.notes,
-      })
-      .from(menuItems)
-      .innerJoin(weeklyMenus, eq(menuItems.menuId, weeklyMenus.id))
-      .where(eq(weeklyMenus.groupId, groupId)),
-    db
-      .select({
-        id: mealOccurrenceItems.id,
-        name: mealOccurrenceItems.name,
-        category: mealOccurrenceItems.category,
-        recipeUrl: mealOccurrenceItems.recipeUrl,
-      })
-      .from(mealOccurrenceItems)
-      .innerJoin(
-        mealOccurrences,
-        eq(mealOccurrenceItems.occurrenceId, mealOccurrences.id),
-      )
-      .where(
-        and(
-          eq(mealOccurrences.groupId, groupId),
-          eq(mealOccurrences.isMenuOverridden, true),
-        ),
-      ),
-  ]);
-  const items = new Map(
-    [
-      ...templateItems,
-      ...datedItems.map((item) => ({ ...item, notes: null })),
-    ].map((item) => [
-      `${item.category}:${item.name.trim().toLocaleLowerCase()}`,
-      item,
-    ]),
-  );
-  return context.json({ data: [...items.values()] });
+  const result = await loadFoodItems(groupId);
+  return context.json({ data: result });
 });
 
 menuRoutes.get("/:groupId/menu-overrides", async (context) => {
@@ -198,34 +163,8 @@ menuRoutes.get("/:groupId/menu-overrides", async (context) => {
   if (!mealDate.success) {
     throw new HTTPException(400, { message: "Invalid date." });
   }
-  const rows = await db
-    .select({
-      parent: { id: mealOccurrences.id, mealType: mealOccurrences.mealType },
-      item: {
-        id: mealOccurrenceItems.id,
-        name: mealOccurrenceItems.name,
-        category: mealOccurrenceItems.category,
-        recipeUrl: mealOccurrenceItems.recipeUrl,
-      },
-    })
-    .from(mealOccurrences)
-    .leftJoin(
-      mealOccurrenceItems,
-      eq(mealOccurrenceItems.occurrenceId, mealOccurrences.id),
-    )
-    .where(
-      and(
-        eq(mealOccurrences.groupId, groupId),
-        eq(mealOccurrences.mealDate, mealDate.data),
-        eq(mealOccurrences.isMenuOverridden, true),
-      ),
-    )
-    .orderBy(asc(mealOccurrences.mealType), asc(mealOccurrenceItems.sortOrder));
-  const data = groupJoinedRows(rows).map(({ mealType, items }) => ({
-    mealType,
-    items,
-  }));
-  return context.json({ data });
+  const result = await loadMenuOverrides(groupId, mealDate.data);
+  return context.json({ data: result });
 });
 
 menuRoutes.put(
@@ -294,6 +233,36 @@ menuRoutes.put(
   },
 );
 
+menuRoutes.post("/:groupId/menus/import", async (context) => {
+  const groupId = context.req.param("groupId");
+  await requireGroupRole(context, groupId, ["ADMIN"]);
+  const body = await context.req.json().catch(() => {
+    throw new HTTPException(400, {
+      message: "Paste valid JSON without markdown fences or extra text.",
+    });
+  });
+  const parsed = menuImportInput.safeParse(body);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0]!;
+    throw new HTTPException(400, {
+      message: `${issue.path.join(".") || "menu"}: ${issue.message}`,
+    });
+  }
+  const payload = parsed.data;
+  await db.transaction(async (tx) => {
+    for (const menu of payload.menus) {
+      await saveWeeklyMenu(
+        tx,
+        groupId,
+        menu.weekday,
+        menu.mealType,
+        menu.items,
+      );
+    }
+  });
+  return context.json({ imported: payload.menus.length });
+});
+
 menuRoutes.put("/:groupId/menus/:weekday/:mealType", async (context) => {
   const groupId = context.req.param("groupId");
   await requireGroupRole(context, groupId, ["ADMIN"]);
@@ -309,31 +278,7 @@ menuRoutes.put("/:groupId/menus/:weekday/:mealType", async (context) => {
   }
   const payload = await readJson(context.req.raw, menuInput);
   const menu = await db.transaction(async (tx) => {
-    const [saved] = await tx
-      .insert(weeklyMenus)
-      .values({ groupId, weekday, mealType: mealType.data })
-      .onConflictDoUpdate({
-        target: [
-          weeklyMenus.groupId,
-          weeklyMenus.weekday,
-          weeklyMenus.mealType,
-        ],
-        set: { updatedAt: new Date() },
-      })
-      .returning();
-    await tx.delete(menuItems).where(eq(menuItems.menuId, saved.id));
-    if (payload.items.length) {
-      await tx.insert(menuItems).values(
-        payload.items.map((item, sortOrder) => ({
-          ...item,
-          menuId: saved.id,
-          recipeUrl: item.recipeUrl ?? null,
-          notes: item.notes ?? null,
-          sortOrder,
-        })),
-      );
-    }
-    return saved;
+    return saveWeeklyMenu(tx, groupId, weekday, mealType.data, payload.items);
   });
   const items = await db
     .select()

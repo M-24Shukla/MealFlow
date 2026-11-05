@@ -1,3 +1,10 @@
+import {
+  loadDinerOnboarding,
+  loadItemAttendance,
+  loadRecurringAbsences,
+  loadAttendance,
+  loadVacations,
+} from "../db/group-reads.js";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -113,26 +120,8 @@ export const attendanceRoutes = new Hono<{ Variables: AppVariables }>();
 attendanceRoutes.get("/:groupId/my/onboarding", async (context) => {
   const groupId = context.req.param("groupId");
   const { membership } = await requireGroupRole(context, groupId, ["CONSUMER"]);
-  const [[onboarding], absences, dietaryPreferences] = await Promise.all([
-    db
-      .select({ completedAt: memberships.dinerOnboardingCompletedAt })
-      .from(memberships)
-      .where(eq(memberships.id, membership.id))
-      .limit(1),
-    db
-      .select({ menuItemId: dinerMenuItemAbsences.menuItemId })
-      .from(dinerMenuItemAbsences)
-      .where(eq(dinerMenuItemAbsences.membershipId, membership.id)),
-    db
-      .select({ category: dinerDietaryPreferences.category })
-      .from(dinerDietaryPreferences)
-      .where(eq(dinerDietaryPreferences.membershipId, membership.id)),
-  ]);
-  return context.json({
-    completed: Boolean(onboarding?.completedAt),
-    absentMenuItemIds: absences.map(({ menuItemId }) => menuItemId),
-    dietaryCategories: dietaryPreferences.map(({ category }) => category),
-  });
+  const result = await loadDinerOnboarding(membership.id);
+  return context.json(result);
 });
 
 attendanceRoutes.put("/:groupId/my/onboarding", async (context) => {
@@ -200,29 +189,8 @@ attendanceRoutes.get("/:groupId/my/item-attendance", async (context) => {
   if (!mealDate.success) {
     throw new HTTPException(400, { message: "Use a valid YYYY-MM-DD date." });
   }
-  const [recurringAbsences, overrides] = await Promise.all([
-    db
-      .select({ itemId: dinerMenuItemAbsences.menuItemId })
-      .from(dinerMenuItemAbsences)
-      .where(eq(dinerMenuItemAbsences.membershipId, membership.id)),
-    db
-      .select({
-        itemId: dinerItemAttendanceOverrides.itemId,
-        mealType: dinerItemAttendanceOverrides.mealType,
-        attendance: dinerItemAttendanceOverrides.attendance,
-      })
-      .from(dinerItemAttendanceOverrides)
-      .where(
-        and(
-          eq(dinerItemAttendanceOverrides.membershipId, membership.id),
-          eq(dinerItemAttendanceOverrides.mealDate, mealDate.data),
-        ),
-      ),
-  ]);
-  return context.json({
-    recurringAbsentItemIds: recurringAbsences.map(({ itemId }) => itemId),
-    overrides,
-  });
+  const result = await loadItemAttendance(membership.id, mealDate.data);
+  return context.json(result);
 });
 
 attendanceRoutes.put(
@@ -300,14 +268,8 @@ attendanceRoutes.put(
 attendanceRoutes.get("/:groupId/my/recurring-absences", async (context) => {
   const groupId = context.req.param("groupId");
   const { membership } = await requireGroupRole(context, groupId, ["CONSUMER"]);
-  const rules = await db
-    .select({
-      weekday: recurringAbsences.weekday,
-      mealType: recurringAbsences.mealType,
-    })
-    .from(recurringAbsences)
-    .where(eq(recurringAbsences.membershipId, membership.id));
-  return context.json({ rules });
+  const result = await loadRecurringAbsences(membership.id);
+  return context.json({ rules: result });
 });
 
 attendanceRoutes.put("/:groupId/my/recurring-absences", async (context) => {
@@ -374,37 +336,15 @@ attendanceRoutes.get("/:groupId/my/attendance", async (context) => {
   if (!mealDate.success) {
     throw new HTTPException(400, { message: "Use a valid YYYY-MM-DD date." });
   }
-  const overrides = await db
-    .select({
-      mealDate: attendanceOverrides.mealDate,
-      mealType: attendanceOverrides.mealType,
-      attendance: attendanceOverrides.attendance,
-    })
-    .from(attendanceOverrides)
-    .where(
-      and(
-        eq(attendanceOverrides.membershipId, membership.id),
-        eq(attendanceOverrides.mealDate, mealDate.data),
-      ),
-    );
-  return context.json({ overrides });
+  const result = await loadAttendance(membership.id, mealDate.data);
+  return context.json({ overrides: result });
 });
 
 attendanceRoutes.get("/:groupId/my/vacations", async (context) => {
   const groupId = context.req.param("groupId");
   const { membership } = await requireGroupRole(context, groupId, ["CONSUMER"]);
-  const vacationsForMember = await db
-    .select({
-      id: vacations.id,
-      startDate: vacations.startDate,
-      startMeal: vacations.startMeal,
-      endDate: vacations.endDate,
-      endMeal: vacations.endMeal,
-    })
-    .from(vacations)
-    .where(eq(vacations.membershipId, membership.id))
-    .orderBy(asc(vacations.startDate));
-  return context.json({ vacations: vacationsForMember });
+  const result = await loadVacations(membership.id);
+  return context.json({ vacations: result });
 });
 
 attendanceRoutes.post("/:groupId/my/vacation", async (context) => {

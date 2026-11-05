@@ -1,3 +1,4 @@
+import { loadJoinRequests, loadGroupMembers } from "../db/group-reads.js";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -9,7 +10,6 @@ import {
   joinRequests,
   membershipRoles,
   memberships,
-  users,
 } from "../db/schema.js";
 import { readJson } from "../lib/http.js";
 import { requireGroupMembership, requireGroupRole } from "../lib/group-auth.js";
@@ -215,74 +215,20 @@ groupRoutes.post("/public/:slug/join-requests", async (context) => {
 groupRoutes.get("/:groupId/join-requests", async (context) => {
   const groupId = context.req.param("groupId");
   await requireGroupRole(context, groupId, ["ADMIN"]);
-  const requests = await db
-    .select({
-      id: joinRequests.id,
-      requestedRole: joinRequests.requestedRole,
-      createdAt: joinRequests.createdAt,
-      applicantName: users.displayName,
-      applicantEmail: users.email,
-    })
-    .from(joinRequests)
-    .innerJoin(users, eq(users.id, joinRequests.applicantId))
-    .where(
-      and(
-        eq(joinRequests.groupId, groupId),
-        eq(joinRequests.status, "PENDING"),
-      ),
-    );
-  return context.json({ data: requests });
+  const data = await loadJoinRequests(groupId);
+  return context.json({ data });
 });
 
 groupRoutes.get("/:groupId/members", async (context) => {
   const groupId = context.req.param("groupId");
   await requireGroupRole(context, groupId, ["ADMIN"]);
-  const rows = await db
-    .select({
-      membershipId: memberships.id,
-      userId: users.id,
-      displayName: users.displayName,
-      email: users.email,
-      role: membershipRoles.role,
-    })
-    .from(memberships)
-    .innerJoin(users, eq(users.id, memberships.userId))
-    .innerJoin(
-      membershipRoles,
-      eq(membershipRoles.membershipId, memberships.id),
-    )
-    .where(
-      and(eq(memberships.groupId, groupId), eq(memberships.status, "ACTIVE")),
-    );
-  const members = new Map<
-    string,
-    {
-      membershipId: string;
-      userId: string;
-      displayName: string;
-      email: string;
-      roles: string[];
-    }
-  >();
-  for (const row of rows) {
-    const member = members.get(row.membershipId);
-    if (member) member.roles.push(row.role);
-    else {
-      members.set(row.membershipId, {
-        membershipId: row.membershipId,
-        userId: row.userId,
-        displayName: row.displayName,
-        email: row.email,
-        roles: [row.role],
-      });
-    }
-  }
-  return context.json({ data: [...members.values()] });
+  const data = await loadGroupMembers(groupId);
+  return context.json({ data });
 });
 
 groupRoutes.put("/:groupId/members/:membershipId/admin", async (context) => {
   const groupId = context.req.param("groupId");
-  await requireGroupRole(context, groupId, ["ADMIN"]);
+  const actor = await requireGroupRole(context, groupId, ["ADMIN"]);
   const payload = await readJson(context.req.raw, administratorRoleInput);
   const [membership] = await db
     .select()
@@ -298,6 +244,11 @@ groupRoutes.put("/:groupId/members/:membershipId/admin", async (context) => {
   if (!membership) {
     throw new HTTPException(404, {
       message: "Active membership was not found.",
+    });
+  }
+  if (membership.id === actor.membership.id) {
+    throw new HTTPException(403, {
+      message: "You cannot change your own administrator role.",
     });
   }
   const [group] = await db
@@ -316,6 +267,11 @@ groupRoutes.put("/:groupId/members/:membershipId/admin", async (context) => {
     .from(membershipRoles)
     .where(eq(membershipRoles.membershipId, membership.id));
   const roles = currentRoles.map(({ role }) => role);
+  if (payload.isAdmin && roles.includes("PRODUCER")) {
+    throw new HTTPException(409, {
+      message: "A cook cannot become an administrator.",
+    });
+  }
   if (payload.isAdmin && !roles.includes("ADMIN")) {
     if (!roles.includes("CONSUMER") || roles.includes("PRODUCER")) {
       throw new HTTPException(409, {
@@ -404,7 +360,7 @@ groupRoutes.delete("/:groupId/my-membership", async (context) => {
 
 groupRoutes.delete("/:groupId/members/:membershipId", async (context) => {
   const groupId = context.req.param("groupId");
-  await requireGroupRole(context, groupId, ["ADMIN"]);
+  const actor = await requireGroupRole(context, groupId, ["ADMIN"]);
   const [membership] = await db
     .select({ id: memberships.id, userId: memberships.userId })
     .from(memberships)
@@ -419,6 +375,11 @@ groupRoutes.delete("/:groupId/members/:membershipId", async (context) => {
   if (!membership) {
     throw new HTTPException(404, {
       message: "Active membership was not found.",
+    });
+  }
+  if (membership.id === actor.membership.id) {
+    throw new HTTPException(403, {
+      message: "You cannot remove yourself through member management.",
     });
   }
   const [group] = await db

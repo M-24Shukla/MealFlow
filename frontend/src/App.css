@@ -6,6 +6,16 @@
 * {
   box-sizing: border-box;
 }
+button {
+  background: #fff;
+  border: 1px solid #d5d1c7;
+  border-radius: 8px;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 500;
+  padding: 9px 12px;
+}
 main {
   min-height: 100vh;
 }
@@ -102,12 +112,12 @@ main {
 .primary {
   background: #18352b;
   border: 1px solid #18352b;
-  border-radius: 999px;
+  border-radius: 8px;
   color: #fffaf2;
   cursor: pointer;
   font: inherit;
-  font-weight: 700;
-  padding: 12px 20px;
+  font-weight: 500;
+  padding: 9px 12px;
 }
 .primary:disabled {
   cursor: wait;
@@ -230,7 +240,7 @@ fieldset input {
 }
 .workspace {
   max-width: 1120px;
-  margin: 0 auto 80px;
+  margin: 0 auto 32px;
   padding: 0 28px;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -362,7 +372,8 @@ fieldset input {
 .day-switcher button {
   background: #fffdf7;
   border: 1px solid #d5d1c7;
-  border-radius: 50%;
+  border-radius: 8px;
+  padding: 0;
   color: inherit;
   cursor: pointer;
   font-size: 1.5rem;
@@ -416,7 +427,7 @@ fieldset input {
 .dish-actions button {
   background: #fff;
   border: 1px solid #d5d1c7;
-  border-radius: 7px;
+  border-radius: 8px;
   color: inherit;
   cursor: pointer;
   font: inherit;
@@ -470,7 +481,7 @@ fieldset input {
   align-items: center;
   background: transparent;
   border: 1px solid #aab5c2;
-  border-radius: 999px;
+  border-radius: 8px;
   color: #74869a;
   cursor: pointer;
   display: inline-flex;
@@ -491,7 +502,7 @@ fieldset input {
   margin-bottom: 14px;
 }
 .dish-actions .item-attendance-toggle {
-  border-radius: 50%;
+  border-radius: 8px;
   padding: 5px;
 }
 .item-attendance-toggle:disabled {
@@ -670,15 +681,15 @@ fieldset input {
 }
 .menu-add {
   background: #18352b;
-  border: 0;
-  border-radius: 999px;
+  border: 1px solid #18352b;
+  border-radius: 8px;
   bottom: 28px;
   color: #fff;
   cursor: pointer;
   font-size: 1rem;
-  font-weight: 700;
-  min-height: 48px;
-  padding: 0 18px;
+  font-weight: 500;
+  min-height: 38px;
+  padding: 9px 12px;
   position: fixed;
   right: 28px;
 }
@@ -885,6 +896,7 @@ button:disabled {
   color: inherit;
   cursor: pointer;
   font: inherit;
+  font-weight: 500;
   padding: 9px 12px;
 }
 .group-summary {
@@ -951,6 +963,7 @@ button:disabled {
   color: inherit;
   cursor: pointer;
   font: inherit;
+  font-weight: 500;
   padding: 9px 12px;
 }
 .active-meal {
@@ -1026,18 +1039,22 @@ button:disabled {
 .list-row button {
   border: 1px solid #d5d1c7;
   background: white;
-  border-radius: 7px;
+  border-radius: 8px;
   padding: 7px 9px;
   cursor: pointer;
 }
 .action-filter {
-  align-items: center;
+  align-items: flex-end;
   display: flex;
   gap: 8px;
   margin: 16px 0 4px;
 }
 .action-filter select {
-  width: auto;
+  width: 100%;
+}
+.action-filter label {
+  flex: 1;
+  min-width: 0;
 }
 .action-item-row {
   justify-content: flex-start;
@@ -1157,4 +1174,20 @@ button:disabled {
     margin-left: 0;
     text-align: left;
   }
+}
+
+.menu-mode-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.menu-import-instructions {
+  margin: 16px 0;
+  padding-left: 22px;
+}
+.menu-import-instructions li + li {
+  margin-top: 8px;
+}
+.menu-import > form {
+  margin-top: 16px;
 }

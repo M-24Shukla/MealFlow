@@ -1,3 +1,4 @@
+import { MenuImport } from "./MenuImport";
 import { useState, type FormEvent } from "react";
 import { mealName, mealTypes, weekdays } from "../lib/meal";
 import type { FoodInput, WeeklyMenu } from "../lib/types";
@@ -11,6 +12,7 @@ type MenuEditorProps = {
   menus: WeeklyMenu[];
   savedFoodItems: WeeklyMenu["items"];
   onClose: () => void;
+  onImport: (json: string) => Promise<boolean>;
   onSave: (
     weekday: string,
     mealType: string,
@@ -40,7 +42,9 @@ export function MenuEditor({
   savedFoodItems,
   onClose,
   onSave,
+  onImport,
 }: MenuEditorProps) {
+  const [mode, setMode] = useState<"manual" | "import">("manual");
   const [weekday, setWeekday] = useState("1");
   const [mealType, setMealType] = useState("BREAKFAST");
   const [draftItems, setDraftItems] = useState<FoodInput[]>(() =>
@@ -86,135 +90,163 @@ export function MenuEditor({
           <p className="field-help">
             A menu is a collection of food items for one day and meal course.
           </p>
-          <form onSubmit={save}>
-            <label>
-              Weekday
-              <select
-                name="weekday"
-                value={weekday}
-                onChange={(event) => selectMenu(event.target.value, mealType)}
-              >
-                {weekdays.map((day, index) => (
-                  <option key={day} value={index + 1}>
-                    {day}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Meal
-              <select
-                name="mealType"
-                value={mealType}
-                onChange={(event) => selectMenu(weekday, event.target.value)}
-              >
-                {mealTypes.map((meal) => (
-                  <option key={meal}>{meal}</option>
-                ))}
-              </select>
-            </label>
-            <div className="food-cards">
-              {draftItems.map((item, index) => (
-                <div className="food-card" key={`${item.name}-${index}`}>
-                  <span>{item.name}</span>
-                  <button
-                    type="button"
-                    aria-label={`Edit ${item.name}`}
-                    onClick={() => {
-                      setEditingFoodIndex(index);
-                      setFoodDialogOpen(true);
-                    }}
-                  >
-                    ✎
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Delete ${item.name}`}
-                    onClick={() =>
-                      setDraftItems((current) =>
-                        current.filter((_, itemIndex) => itemIndex !== index),
-                      )
-                    }
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-            </div>
-            <label>
-              Saved food items
-              <select
-                value={foodSearch}
-                onChange={(event) => setFoodSearch(event.target.value)}
-              >
-                <option value="">Choose a food item</option>
-                {foodCategoryOrder.map((category) => (
-                  <optgroup key={category} label={foodCategoryName(category)}>
-                    {savedFoodItems
-                      .filter((item) => item.category === category)
-                      .map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.name}
-                        </option>
-                      ))}
-                  </optgroup>
-                ))}
-              </select>
-            </label>
+          <div
+            className="dialog-actions menu-mode-switch"
+            role="group"
+            aria-label="Menu editing mode"
+          >
             <button
               type="button"
-              className="secondary"
-              onClick={() => {
-                const item = savedFoodItems.find(
-                  (candidate) => candidate.id === foodSearch,
-                );
-                if (!item) return;
-                setDraftItems((current) => [
-                  ...current,
-                  {
-                    name: item.name,
-                    category: item.category,
-                    recipeUrl: item.recipeUrl ?? "",
-                    notes: item.notes ?? "",
-                  },
-                ]);
-                setFoodSearch("");
-              }}
+              className={mode === "manual" ? "primary" : "secondary"}
+              aria-pressed={mode === "manual"}
+              disabled={busy}
+              onClick={() => setMode("manual")}
             >
-              Add selected food item
+              Edit manually
             </button>
             <button
               type="button"
-              className="secondary"
-              onClick={() => {
-                setEditingFoodIndex(null);
-                setFoodDialogOpen(true);
-              }}
+              className={mode === "import" ? "primary" : "secondary"}
+              aria-pressed={mode === "import"}
+              disabled={busy}
+              onClick={() => setMode("import")}
             >
-              Add new food item
+              Import from AI
             </button>
-            <p className="field-help">
-              Food items can be edited or removed before saving this menu.
-            </p>
-            <div className="dialog-actions">
+          </div>
+          {mode === "import" ? (
+            <MenuImport busy={busy} onImport={onImport} />
+          ) : (
+            <form onSubmit={save}>
+              <label>
+                Weekday
+                <select
+                  name="weekday"
+                  value={weekday}
+                  onChange={(event) => selectMenu(event.target.value, mealType)}
+                >
+                  {weekdays.map((day, index) => (
+                    <option key={day} value={index + 1}>
+                      {day}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Meal
+                <select
+                  name="mealType"
+                  value={mealType}
+                  onChange={(event) => selectMenu(weekday, event.target.value)}
+                >
+                  {mealTypes.map((meal) => (
+                    <option key={meal}>{meal}</option>
+                  ))}
+                </select>
+              </label>
+              <div className="food-cards">
+                {draftItems.map((item, index) => (
+                  <div className="food-card" key={`${item.name}-${index}`}>
+                    <span>{item.name}</span>
+                    <button
+                      type="button"
+                      aria-label={`Edit ${item.name}`}
+                      onClick={() => {
+                        setEditingFoodIndex(index);
+                        setFoodDialogOpen(true);
+                      }}
+                    >
+                      ✎
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Delete ${item.name}`}
+                      onClick={() =>
+                        setDraftItems((current) =>
+                          current.filter((_, itemIndex) => itemIndex !== index),
+                        )
+                      }
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <label>
+                Saved food items
+                <select
+                  value={foodSearch}
+                  onChange={(event) => setFoodSearch(event.target.value)}
+                >
+                  <option value="">Choose a food item</option>
+                  {foodCategoryOrder.map((category) => (
+                    <optgroup key={category} label={foodCategoryName(category)}>
+                      {savedFoodItems
+                        .filter((item) => item.category === category)
+                        .map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.name}
+                          </option>
+                        ))}
+                    </optgroup>
+                  ))}
+                </select>
+              </label>
               <button
-                className="primary"
-                disabled={busy}
-                type="submit"
-                value="save"
-              >
-                Save menu
-              </button>
-              <button
+                type="button"
                 className="secondary"
-                disabled={busy}
-                type="submit"
-                value="continue"
+                onClick={() => {
+                  const item = savedFoodItems.find(
+                    (candidate) => candidate.id === foodSearch,
+                  );
+                  if (!item) return;
+                  setDraftItems((current) => [
+                    ...current,
+                    {
+                      name: item.name,
+                      category: item.category,
+                      recipeUrl: item.recipeUrl ?? "",
+                      notes: item.notes ?? "",
+                    },
+                  ]);
+                  setFoodSearch("");
+                }}
               >
-                Save and create another
+                Add selected food item
               </button>
-            </div>
-          </form>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  setEditingFoodIndex(null);
+                  setFoodDialogOpen(true);
+                }}
+              >
+                Add new food item
+              </button>
+              <p className="field-help">
+                Food items can be edited or removed before saving this menu.
+              </p>
+              <div className="dialog-actions">
+                <button
+                  className="primary"
+                  disabled={busy}
+                  type="submit"
+                  value="save"
+                >
+                  Save menu
+                </button>
+                <button
+                  className="secondary"
+                  disabled={busy}
+                  type="submit"
+                  value="continue"
+                >
+                  Save and create another
+                </button>
+              </div>
+            </form>
+          )}
         </section>
       </div>
       {foodDialogOpen && (

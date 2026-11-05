@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { roleName } from "../lib/meal";
 import type { Group, JoinRequest, Member } from "../lib/types";
@@ -6,39 +6,41 @@ import type { Group, JoinRequest, Member } from "../lib/types";
 type AdminWorkspaceProps = {
   busy: boolean;
   group: Group;
+  currentUserId: string;
   run: (work: () => Promise<void>, trackBusy?: boolean) => Promise<void>;
 };
 
-export function AdminWorkspace({ busy, group, run }: AdminWorkspaceProps) {
+export function AdminWorkspace({
+  busy,
+  group,
+  currentUserId,
+  run,
+}: AdminWorkspaceProps) {
+  const sectionRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const closeOutside = (event: PointerEvent) => {
+      for (const menu of sectionRef.current?.querySelectorAll<HTMLDetailsElement>(
+        ".member-actions[open]",
+      ) ?? []) {
+        if (!menu.contains(event.target as Node)) menu.open = false;
+      }
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    return () => document.removeEventListener("pointerdown", closeOutside);
+  }, []);
   const [requests, setRequests] = useState<JoinRequest[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [members, setMembers] = useState<Member[]>([]);
 
   const loadMembers = async () => {
-    const [requestData, memberData] = await Promise.all([
-      api<{ data: JoinRequest[] }>(`/groups/${group.id}/join-requests`),
-      api<{ data: Member[] }>(`/groups/${group.id}/members`),
-    ]);
-    setRequests(requestData.data);
-    setMembers(memberData.data);
+    const data = await api<{ requests: JoinRequest[]; members: Member[] }>(
+      `/groups/${group.id}/workspace/admin`,
+    );
+    setRequests(data.requests);
+    setMembers(data.members);
+    setLoaded(true);
   };
   const refresh = () => void run(loadMembers);
-
-  useEffect(() => {
-    let current = true;
-    void Promise.all([
-      api<{ data: JoinRequest[] }>(`/groups/${group.id}/join-requests`),
-      api<{ data: Member[] }>(`/groups/${group.id}/members`),
-    ])
-      .then(([requestData, memberData]) => {
-        if (!current) return;
-        setRequests(requestData.data);
-        setMembers(memberData.data);
-      })
-      .catch(() => undefined);
-    return () => {
-      current = false;
-    };
-  }, [group.id]);
 
   const review = (requestId: string, action: "approve" | "reject") =>
     void run(async () => {
@@ -66,85 +68,133 @@ export function AdminWorkspace({ busy, group, run }: AdminWorkspaceProps) {
     });
 
   return (
-    <section className="member-management">
-      <h2>Members</h2>
-      <div className="member-management-grid">
-        <section className="panel">
-          <h2>Invite management</h2>
-          <button className="primary" onClick={refresh} disabled={busy}>
-            Refresh requests & members
-          </button>
-          {requests.length === 0 ? (
-            <p className="empty">No pending join requests.</p>
-          ) : (
-            requests.map((item) => (
-              <div className="list-row" key={item.id}>
-                <span>
-                  <strong>{item.applicantName}</strong>
-                  <br />
-                  {item.requestedRole} · {item.applicantEmail}
-                </span>
-                <button onClick={() => review(item.id, "approve")}>
-                  Approve
-                </button>
-                <button onClick={() => review(item.id, "reject")}>
-                  Reject
-                </button>
-              </div>
-            ))
-          )}
-        </section>
-        <section className="panel">
-          <h2>Members</h2>
-          {members.length === 0 ? (
-            <p className="empty">No active members.</p>
-          ) : (
-            [
-              {
-                title: "Cooks",
-                members: members.filter((member) =>
-                  member.roles.includes("PRODUCER"),
-                ),
-              },
-              {
-                title: "Diners",
-                members: members.filter((member) =>
-                  member.roles.includes("CONSUMER"),
-                ),
-              },
-            ].map(({ title, members: roleMembers }) => (
-              <div className="member-role-group" key={title}>
-                <h3>{title}</h3>
-                {roleMembers.length === 0 ? (
-                  <p className="empty">No {title.toLowerCase()} yet.</p>
-                ) : (
-                  roleMembers.map((member) => (
-                    <div className="list-row" key={member.membershipId}>
-                      <span>
-                        <strong>{member.displayName}</strong>
-                        <br />
-                        {member.roles.map(roleName).join(", ")}
-                      </span>
-                      {member.roles.includes("ADMIN") ? (
-                        <button onClick={() => setAdmin(member, false)}>
-                          Remove admin
-                        </button>
-                      ) : (
-                        <button onClick={() => setAdmin(member, true)}>
-                          Make admin
-                        </button>
-                      )}
-                      <button onClick={() => removeMember(member)}>
-                        Remove member
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
-            ))
-          )}
-        </section>
+    <section className="member-management" ref={sectionRef}>
+      <div className="member-section-heading">
+        <h2>Members</h2>
+        <button
+          className="secondary"
+          onClick={refresh}
+          disabled={busy}
+          aria-label={loaded ? "Refresh members" : "Load members"}
+          title={loaded ? "Refresh members" : "Load members"}
+        >
+          {loaded ? "↻" : "Load members"}
+        </button>
       </div>
+      {loaded && (
+        <div className="member-management-grid">
+          <section className="panel">
+            <h2>Invite management</h2>
+            {requests.length === 0 ? (
+              <p className="empty">No pending join requests.</p>
+            ) : (
+              requests.map((item) => (
+                <div className="list-row" key={item.id}>
+                  <span>
+                    <strong>{item.applicantName}</strong>
+                    <br />
+                    {item.requestedRole} · {item.applicantEmail}
+                  </span>
+                  <button onClick={() => review(item.id, "approve")}>
+                    Approve
+                  </button>
+                  <button onClick={() => review(item.id, "reject")}>
+                    Reject
+                  </button>
+                </div>
+              ))
+            )}
+          </section>
+          <section className="panel">
+            <h2>Members</h2>
+            {members.length === 0 ? (
+              <p className="empty">No active members.</p>
+            ) : (
+              [
+                {
+                  title: "Cooks",
+                  members: members.filter((member) =>
+                    member.roles.includes("PRODUCER"),
+                  ),
+                },
+                {
+                  title: "Diners",
+                  members: members.filter((member) =>
+                    member.roles.includes("CONSUMER"),
+                  ),
+                },
+              ].map(({ title, members: roleMembers }) => (
+                <div className="member-role-group" key={title}>
+                  <h3>{title}</h3>
+                  {roleMembers.length === 0 ? (
+                    <p className="empty">No {title.toLowerCase()} yet.</p>
+                  ) : (
+                    roleMembers.map((member) => (
+                      <div className="list-row" key={member.membershipId}>
+                        <span>
+                          <strong>{member.displayName}</strong>
+                          <br />
+                          {member.roles.map(roleName).join(", ")}
+                        </span>
+                        {member.userId !== currentUserId &&
+                          !member.isCreator && (
+                            <details className="member-actions">
+                              <summary
+                                aria-label={`Actions for ${member.displayName}`}
+                                aria-disabled={busy}
+                                onClick={(event) => {
+                                  if (busy) event.preventDefault();
+                                }}
+                              >
+                                ⋯
+                              </summary>
+                              <div
+                                className="member-actions-menu"
+                                onClick={(event) => {
+                                  if (
+                                    (event.target as HTMLElement).closest(
+                                      "button",
+                                    )
+                                  )
+                                    event.currentTarget.parentElement?.removeAttribute(
+                                      "open",
+                                    );
+                                }}
+                              >
+                                <button
+                                  disabled={busy}
+                                  onClick={() => removeMember(member)}
+                                >
+                                  Remove
+                                </button>
+                                {!member.roles.includes("PRODUCER") &&
+                                  member.roles.includes("CONSUMER") && (
+                                    <button
+                                      disabled={busy}
+                                      onClick={() =>
+                                        setAdmin(
+                                          member,
+                                          !member.roles.includes("ADMIN"),
+                                        )
+                                      }
+                                    >
+                                      {member.roles.includes("ADMIN")
+                                        ? "Remove admin"
+                                        : "Make admin"}
+                                    </button>
+                                  )}
+                              </div>
+                            </details>
+                          )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              ))
+            )}
+          </section>
+        </div>
+      )}
     </section>
   );
 }

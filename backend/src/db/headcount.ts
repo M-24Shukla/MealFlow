@@ -7,14 +7,23 @@ import {
   membershipRoles,
   memberships,
   recurringAbsences,
+  mealType as mealTypeEnum,
 } from "./schema.js";
 import { isoWeekday } from "../lib/attendance.js";
 
-async function groupAttendance(
+type MealType = (typeof mealTypeEnum.enumValues)[number];
+type Attendance = {
+  membershipIds: string[];
+  presentMembershipIds: string[];
+  overrides: number;
+};
+export type DayAttendance = Map<MealType, Attendance>;
+
+// Three reads cover every meal on the date; callers reuse the resulting snapshot.
+export async function loadGroupAttendance(
   groupId: string,
   mealDate: string,
-  mealType: "BREAKFAST" | "BRUNCH" | "LUNCH" | "SNACKS" | "DINNER",
-) {
+): Promise<DayAttendance> {
   const consumers = await db
     .select({ membershipId: memberships.id })
     .from(memberships)
@@ -29,62 +38,89 @@ async function groupAttendance(
         eq(membershipRoles.role, "CONSUMER"),
       ),
     );
-  const membershipIds = consumers.map(({ membershipId }) => membershipId);
-  if (!membershipIds.length) {
-    return { membershipIds, presentMembershipIds: [], overrides: 0 };
-  }
-  const [recurring, overrides] = await Promise.all([
-    db
-      .select({ membershipId: recurringAbsences.membershipId })
-      .from(recurringAbsences)
-      .where(
-        and(
-          inArray(recurringAbsences.membershipId, membershipIds),
-          eq(recurringAbsences.weekday, isoWeekday(mealDate)),
-          eq(recurringAbsences.mealType, mealType),
-        ),
-      ),
-    db
-      .select({
-        membershipId: attendanceOverrides.membershipId,
-        attendance: attendanceOverrides.attendance,
-      })
-      .from(attendanceOverrides)
-      .where(
-        and(
-          inArray(attendanceOverrides.membershipId, membershipIds),
-          eq(attendanceOverrides.mealDate, mealDate),
-          eq(attendanceOverrides.mealType, mealType),
-        ),
-      ),
-  ]);
-  const recurringAbsent = new Set(
-    recurring.map(({ membershipId }) => membershipId),
+  const membershipIds = consumers.map((item) => item.membershipId);
+  const [recurring, overrides] = membershipIds.length
+    ? await Promise.all([
+        db
+          .select({
+            membershipId: recurringAbsences.membershipId,
+            mealType: recurringAbsences.mealType,
+          })
+          .from(recurringAbsences)
+          .where(
+            and(
+              inArray(recurringAbsences.membershipId, membershipIds),
+              eq(recurringAbsences.weekday, isoWeekday(mealDate)),
+            ),
+          ),
+        db
+          .select({
+            membershipId: attendanceOverrides.membershipId,
+            mealType: attendanceOverrides.mealType,
+            attendance: attendanceOverrides.attendance,
+          })
+          .from(attendanceOverrides)
+          .where(
+            and(
+              inArray(attendanceOverrides.membershipId, membershipIds),
+              eq(attendanceOverrides.mealDate, mealDate),
+            ),
+          ),
+      ])
+    : [[], []];
+  return new Map(
+    mealTypeEnum.enumValues.map((mealType) => {
+      const recurringAbsent = new Set(
+        recurring
+          .filter((item) => item.mealType === mealType)
+          .map((item) => item.membershipId),
+      );
+      const mealOverrides = overrides.filter(
+        (item) => item.mealType === mealType,
+      );
+      const byMembership = new Map(
+        mealOverrides.map((item) => [item.membershipId, item.attendance]),
+      );
+      const presentMembershipIds = membershipIds.filter(
+        (id) =>
+          byMembership.get(id) === "PRESENT" ||
+          (byMembership.get(id) !== "ABSENT" && !recurringAbsent.has(id)),
+      );
+      return [
+        mealType,
+        {
+          membershipIds,
+          presentMembershipIds,
+          overrides: mealOverrides.length,
+        },
+      ];
+    }),
   );
-  const overridesByMembership = new Map(
-    overrides.map(({ membershipId, attendance }) => [membershipId, attendance]),
-  );
-  const rules = membershipIds.map((membershipId) => ({
-    membershipId,
-    recurringAbsent: recurringAbsent.has(membershipId),
-    override: overridesByMembership.get(membershipId),
-  }));
-  const presentMembershipIds = rules
-    .filter(
-      (rule) =>
-        rule.override === "PRESENT" ||
-        (rule.override !== "ABSENT" && !rule.recurringAbsent),
-    )
-    .map(({ membershipId }) => membershipId);
-  return { membershipIds, presentMembershipIds, overrides: overrides.length };
+}
+
+async function groupAttendance(
+  groupId: string,
+  mealDate: string,
+  mealType: MealType,
+  snapshot?: DayAttendance,
+) {
+  return (snapshot ?? (await loadGroupAttendance(groupId, mealDate))).get(
+    mealType,
+  )!;
 }
 
 export async function groupHeadcount(
   groupId: string,
   mealDate: string,
-  mealType: "BREAKFAST" | "BRUNCH" | "LUNCH" | "SNACKS" | "DINNER",
+  mealType: MealType,
+  snapshot?: DayAttendance,
 ) {
-  const attendance = await groupAttendance(groupId, mealDate, mealType);
+  const attendance = await groupAttendance(
+    groupId,
+    mealDate,
+    mealType,
+    snapshot,
+  );
   const expected = attendance.presentMembershipIds.length;
   return {
     expected,
@@ -98,11 +134,13 @@ export async function groupItemHeadcounts(
   mealDate: string,
   mealType: "BREAKFAST" | "BRUNCH" | "LUNCH" | "SNACKS" | "DINNER",
   items: { id: string; sourceMenuItemId: string | null }[],
+  snapshot?: DayAttendance,
 ) {
   const { presentMembershipIds } = await groupAttendance(
     groupId,
     mealDate,
     mealType,
+    snapshot,
   );
   if (!presentMembershipIds.length || !items.length)
     return new Map<string, number>();

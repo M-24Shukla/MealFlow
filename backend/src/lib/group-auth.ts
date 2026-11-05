@@ -19,7 +19,12 @@ export async function requireGroupMembership(
   }
   const user = requireUser(context);
   const [membership] = await db
-    .select({ id: memberships.id, groupId: memberships.groupId })
+    .select({
+      id: memberships.id,
+      groupId: memberships.groupId,
+      dinerOnboardingCompletedAt: memberships.dinerOnboardingCompletedAt,
+      cookOnboardingCompletedAt: memberships.cookOnboardingCompletedAt,
+    })
     .from(memberships)
     .where(
       and(

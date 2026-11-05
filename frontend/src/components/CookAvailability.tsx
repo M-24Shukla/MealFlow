@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useRef, useState, type FormEvent } from "react";
 import { api } from "../lib/api";
 import { dateValue, mealIndex, mealName, mealTypes } from "../lib/meal";
 import type { Group } from "../lib/types";
@@ -34,8 +34,33 @@ export function CookAvailability({
   onLeavesChange,
 }: CookAvailabilityProps) {
   const [leaveFilter, setLeaveFilter] = useState<
-    "UPCOMING" | "PRESENT" | "PAST"
-  >("UPCOMING");
+    "" | "UPCOMING" | "PRESENT" | "PAST"
+  >("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const requestRef = useRef(0);
+  const loadLeavePlans = async (filter: typeof leaveFilter) => {
+    setLeaveFilter(filter);
+    if (!filter) return;
+    const requestId = ++requestRef.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await api<{ leaves: Leave[] }>(
+        `/groups/${group.id}/my/leaves`,
+      );
+      if (requestId === requestRef.current) onLeavesChange(result.leaves);
+    } catch (error) {
+      if (requestId === requestRef.current)
+        setError(
+          error instanceof Error
+            ? error.message
+            : "Unable to load leave plans.",
+        );
+    } finally {
+      if (requestId === requestRef.current) setLoading(false);
+    }
+  };
   const [editingLeave, setEditingLeave] = useState<LeaveRange | null>(null);
 
   const leaveRanges = useMemo(() => {
@@ -73,6 +98,14 @@ export function CookAvailability({
       return ranges;
     }, []);
   }, [leaves]);
+  const visibleLeaves = leaveRanges.filter((leave) => {
+    const today = dateValue(new Date());
+    return leaveFilter === "PRESENT"
+      ? leave.start <= today && leave.end >= today
+      : leaveFilter === "UPCOMING"
+        ? leave.start > today
+        : leave.end < today;
+  });
 
   const recordLeave = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -98,6 +131,9 @@ export function CookAvailability({
         `/groups/${group.id}/my/leaves`,
       );
       onLeavesChange(result.leaves);
+      requestRef.current += 1;
+      setLoading(false);
+      setError(null);
       setEditingLeave(null);
       onMessage(editingLeave ? "Leave updated." : "Leave recorded.");
     });
@@ -114,6 +150,9 @@ export function CookAvailability({
         `/groups/${group.id}/my/leaves`,
       );
       onLeavesChange(result.leaves);
+      requestRef.current += 1;
+      setLoading(false);
+      setError(null);
       if (editingLeave === leave) setEditingLeave(null);
       onMessage("Leave deleted.");
     });
@@ -122,7 +161,7 @@ export function CookAvailability({
   return (
     <>
       <div className="panel cook-availability">
-        <h2>Cook availability</h2>
+        <h2>Leave</h2>
         <form
           key={
             editingLeave
@@ -196,32 +235,38 @@ export function CookAvailability({
         </form>
       </div>
       <div className="panel cook-leave-list">
-        <h2>Recorded leaves</h2>
+        <h2>Leave plans</h2>
         <label>
-          Show
+          Show leaves
           <select
             value={leaveFilter}
+            disabled={busy}
             onChange={(event) =>
-              setLeaveFilter(
+              void loadLeavePlans(
                 event.target.value as "UPCOMING" | "PRESENT" | "PAST",
               )
             }
           >
+            <option value="" disabled>
+              Select period
+            </option>
             <option value="UPCOMING">Upcoming</option>
             <option value="PRESENT">Present</option>
             <option value="PAST">Past</option>
           </select>
         </label>
-        {leaveRanges
-          .filter((leave) => {
-            const today = dateValue(new Date());
-            return leaveFilter === "PRESENT"
-              ? leave.start <= today && leave.end >= today
-              : leaveFilter === "UPCOMING"
-                ? leave.start > today
-                : leave.end < today;
-          })
-          .map((leave) => (
+        {!leaveFilter && (
+          <p className="empty">Select a period to load leave plans.</p>
+        )}
+        {loading && <p role="status">Loading…</p>}
+        {!loading && error && <p role="alert">{error}</p>}
+        {leaveFilter && !loading && !error && !visibleLeaves.length && (
+          <p className="empty">No leave plans for this period.</p>
+        )}
+        {leaveFilter &&
+          !loading &&
+          !error &&
+          visibleLeaves.map((leave) => (
             <div
               className="list-row"
               key={`${leave.start}-${leave.startMeal}-${leave.end}-${leave.endMeal}`}

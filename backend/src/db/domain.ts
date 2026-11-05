@@ -34,6 +34,10 @@ export async function activateMembershipWithRole(
       set: { status: "ACTIVE" },
     })
     .returning();
+  // Rejoining grants the approved role, without restoring former privileges.
+  await tx
+    .delete(membershipRoles)
+    .where(eq(membershipRoles.membershipId, membership.id));
   await tx
     .insert(membershipRoles)
     .values({ membershipId: membership.id, role: input.role })

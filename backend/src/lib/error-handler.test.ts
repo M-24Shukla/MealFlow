@@ -17,6 +17,32 @@ function failingApp(error: Error) {
 
 describe("API exception handling", () => {
   it.each([
+    "timeout expired",
+    "timeout exceeded when trying to connect",
+    "Connection terminated due to connection timeout",
+  ])("recognizes a code-less connection timeout: %s", async (message) => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const error = new DrizzleQueryError(
+      "private SQL",
+      ["private@example.test"],
+      new Error(message),
+    );
+    const response = await failingApp(error).request("/api/v1/auth/login", {
+      method: "POST",
+    });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "SERVICE_UNAVAILABLE" },
+    });
+    expect(log).toHaveBeenCalledOnce();
+    expect(JSON.parse(log.mock.calls[0][1])).toMatchObject({
+      category: "DATABASE_ERROR",
+      databaseReason: "CONNECTION_TIMEOUT",
+    });
+    expect(JSON.stringify(log.mock.calls)).not.toContain("private");
+  });
+
+  it.each([
     ["XX000", "(ENOTFOUND) tenant/user postgres.private-project not found"],
     ["ECONNREFUSED", "Connection refused"],
     ["08006", "Connection failure"],

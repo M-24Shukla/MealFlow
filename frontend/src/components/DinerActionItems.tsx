@@ -1,8 +1,12 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { api } from "../lib/api";
 import { dateValue } from "../lib/meal";
 import type { Group } from "../lib/types";
-import { ActionItemList, type ActionItem } from "./ActionItemList";
+import {
+  ActionItemList,
+  type ActionItem,
+  type ActionItemStatus,
+} from "./ActionItemList";
 
 type DinerActionItemsProps = {
   busy: boolean;
@@ -22,23 +26,36 @@ export function DinerActionItems({
   onMessage,
 }: DinerActionItemsProps) {
   const [items, setItems] = useState<ActionItem[]>([]);
-
-  useEffect(() => {
-    let current = true;
-    void run(async () => {
+  const [status, setStatus] = useState<ActionItemStatus>("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const requestRef = useRef(0);
+  const loadItems = async (selection = status) => {
+    if (!selection) return;
+    const requestId = ++requestRef.current;
+    setLoading(true);
+    setError(null);
+    try {
       const result = await api<{ items: ActionItem[] }>(
-        `/groups/${group.id}/action-items`,
+        `/groups/${group.id}/action-items?status=${selection}`,
       );
-      if (current) setItems(result.items);
-    }, false);
-    return () => {
-      current = false;
-    };
-  }, [group.id, run]);
+      if (requestId === requestRef.current) setItems(result.items);
+    } catch (error) {
+      if (requestId === requestRef.current)
+        setError(
+          error instanceof Error
+            ? error.message
+            : "Unable to load action items.",
+        );
+    } finally {
+      if (requestId === requestRef.current) setLoading(false);
+    }
+  };
 
   const addItem = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    const target = event.currentTarget;
+    const form = new FormData(target);
     void run(async () => {
       const result = await api<{ item: ActionItem }>(
         `/groups/${group.id}/action-items`,
@@ -51,7 +68,8 @@ export function DinerActionItems({
         },
       );
       setItems((current) => [...current, result.item]);
-      event.currentTarget.reset();
+      await loadItems();
+      target.reset();
       onMessage("Action item added.");
     });
   };
@@ -65,6 +83,7 @@ export function DinerActionItems({
       setItems((current) =>
         current.map((item) => (item.id === id ? result.item : item)),
       );
+      await loadItems();
       onMessage(
         completed
           ? "Action item completed."
@@ -86,6 +105,7 @@ export function DinerActionItems({
       setItems((current) =>
         current.map((action) => (action.id === item.id ? result.item : action)),
       );
+      await loadItems();
       onMessage("Action item updated.");
     });
   };
@@ -95,6 +115,7 @@ export function DinerActionItems({
     void run(async () => {
       await api(`/groups/${group.id}/action-items/${id}`, { method: "DELETE" });
       setItems((current) => current.filter((item) => item.id !== id));
+      await loadItems();
       onMessage("Action item deleted.");
     });
   };
@@ -135,6 +156,15 @@ export function DinerActionItems({
           <h3>Action items</h3>
           <ActionItemList
             items={items}
+            status={status}
+            loading={loading}
+            error={error}
+            busy={busy}
+            onStatusChange={(selection) => {
+              setStatus(selection);
+              void loadItems(selection);
+            }}
+            onRefresh={() => void loadItems()}
             currentUserName={currentUserName}
             onCompletionChange={updateItem}
             onEdit={editItem}

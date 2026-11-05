@@ -1,15 +1,21 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import {
+  actionItemFields,
+  loadCookOnboarding,
+  loadMyLeaves,
+  loadCookLeaves,
+  loadActionItems,
+  loadPreparation,
+} from "../db/group-reads.js";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { db } from "../db/client.js";
 import { materializeMealOccurrence } from "../db/domain.js";
-import { groupHeadcount, groupItemHeadcounts } from "../db/headcount.js";
 import {
   actionItems,
   mealOccurrenceItems,
   mealOccurrences,
-  membershipRoles,
   memberships,
   occurrenceProducers,
   preparationRecords,
@@ -56,19 +62,6 @@ const actionItemUpdateInput = z
     },
   );
 
-const actionItemFields = {
-  id: actionItems.id,
-  text: actionItems.text,
-  dueDate: actionItems.dueDate,
-  completed: actionItems.completed,
-  createdAt: actionItems.createdAt,
-  completedAt: sql<Date | null>`action_items.completed_at`,
-  createdByName: sql<string>`(select creator_user.display_name from memberships as creator_membership join users as creator_user on creator_user.id = creator_membership.user_id where creator_membership.id = ${actionItems.createdByMembershipId})`,
-  completedByName: sql<
-    string | null
-  >`(select completer_user.display_name from memberships as completer_membership join users as completer_user on completer_user.id = completer_membership.user_id where completer_membership.id = ${actionItems.completedByMembershipId})`,
-};
-
 function mealQuery(context: {
   req: { query(name: string): string | undefined };
 }) {
@@ -88,12 +81,8 @@ preparationRoutes.get("/:groupId/my/cook-onboarding", async (context) => {
     context.req.param("groupId"),
     ["PRODUCER"],
   );
-  const [onboarding] = await db
-    .select({ completedAt: memberships.cookOnboardingCompletedAt })
-    .from(memberships)
-    .where(eq(memberships.id, membership.id))
-    .limit(1);
-  return context.json({ completed: Boolean(onboarding?.completedAt) });
+  const result = await loadCookOnboarding(membership.id);
+  return context.json({ completed: result });
 });
 
 preparationRoutes.put("/:groupId/my/cook-onboarding", async (context) => {
@@ -205,51 +194,15 @@ preparationRoutes.get("/:groupId/my/leaves", async (context) => {
     context.req.param("groupId"),
     ["PRODUCER"],
   );
-  const leaves = await db
-    .select({
-      id: producerLeaves.id,
-      mealDate: producerLeaves.mealDate,
-      mealType: producerLeaves.mealType,
-      reason: producerLeaves.reason,
-    })
-    .from(producerLeaves)
-    .where(eq(producerLeaves.membershipId, membership.id))
-    .orderBy(asc(producerLeaves.mealDate), asc(producerLeaves.mealType));
-  return context.json({ leaves });
+  const result = await loadMyLeaves(membership.id);
+  return context.json({ leaves: result });
 });
 
 preparationRoutes.get("/:groupId/cook-leaves", async (context) => {
   const groupId = context.req.param("groupId");
   await requireGroupRole(context, groupId, ["ADMIN", "CONSUMER", "PRODUCER"]);
-  const [cooks, leaves] = await Promise.all([
-    db
-      .select({ membershipId: memberships.id })
-      .from(memberships)
-      .innerJoin(
-        membershipRoles,
-        eq(membershipRoles.membershipId, memberships.id),
-      )
-      .where(
-        and(
-          eq(memberships.groupId, groupId),
-          eq(memberships.status, "ACTIVE"),
-          eq(membershipRoles.role, "PRODUCER"),
-        ),
-      ),
-    db
-      .select({
-        membershipId: producerLeaves.membershipId,
-        mealDate: producerLeaves.mealDate,
-        mealType: producerLeaves.mealType,
-        reason: producerLeaves.reason,
-      })
-      .from(producerLeaves)
-      .innerJoin(memberships, eq(producerLeaves.membershipId, memberships.id))
-      .where(
-        and(eq(memberships.groupId, groupId), eq(memberships.status, "ACTIVE")),
-      ),
-  ]);
-  return context.json({ cookCount: cooks.length, leaves });
+  const result = await loadCookLeaves(groupId);
+  return context.json(result);
 });
 
 preparationRoutes.delete("/:groupId/my/leaves", async (context) => {
@@ -309,70 +262,8 @@ preparationRoutes.get("/:groupId/preparation", async (context) => {
   const groupId = context.req.param("groupId");
   const actor = await requireGroupRole(context, groupId, ["ADMIN", "PRODUCER"]);
   const { mealDate, mealType } = mealQuery(context);
-  const { occurrence } = await db.transaction((tx) =>
-    materializeMealOccurrence(tx, {
-      groupId,
-      mealDate,
-      mealType,
-      weekday: isoWeekday(mealDate),
-    }),
-  );
-  if (!actor.roles.includes("ADMIN")) {
-    const [assigned] = await db
-      .select()
-      .from(occurrenceProducers)
-      .where(
-        and(
-          eq(occurrenceProducers.occurrenceId, occurrence.id),
-          eq(occurrenceProducers.membershipId, actor.membership.id),
-        ),
-      )
-      .limit(1);
-    if (!assigned)
-      throw new HTTPException(403, {
-        message: "You are not assigned to this meal.",
-      });
-  }
-  const [headcount, items] = await Promise.all([
-    groupHeadcount(groupId, mealDate, mealType),
-    db
-      .select({
-        id: preparationRecords.id,
-        occurrenceItemId: mealOccurrenceItems.id,
-        sourceMenuItemId: mealOccurrenceItems.sourceMenuItemId,
-        name: mealOccurrenceItems.name,
-        category: mealOccurrenceItems.category,
-        recipeUrl: mealOccurrenceItems.recipeUrl,
-        sortOrder: mealOccurrenceItems.sortOrder,
-        status: preparationRecords.status,
-        updatedByMembershipId: preparationRecords.updatedByMembershipId,
-        updatedAt: preparationRecords.updatedAt,
-      })
-      .from(preparationRecords)
-      .innerJoin(
-        mealOccurrenceItems,
-        eq(preparationRecords.occurrenceItemId, mealOccurrenceItems.id),
-      )
-      .where(eq(mealOccurrenceItems.occurrenceId, occurrence.id))
-      .orderBy(asc(mealOccurrenceItems.sortOrder)),
-  ]);
-  const itemHeadcounts = await groupItemHeadcounts(
-    groupId,
-    mealDate,
-    mealType,
-    items.map(({ occurrenceItemId, sourceMenuItemId }) => ({
-      id: occurrenceItemId,
-      sourceMenuItemId,
-    })),
-  );
-  return context.json({
-    occurrence,
-    headcount: headcount.expected,
-    items: items.map(({ occurrenceItemId, ...item }) => ({
-      ...item,
-      expectedDiners: itemHeadcounts.get(occurrenceItemId) ?? 0,
-    })),
-  });
+  const result = await loadPreparation(groupId, actor, mealDate, mealType);
+  return context.json(result);
 });
 
 preparationRoutes.patch("/:groupId/preparation/:recordId", async (context) => {
@@ -436,14 +327,14 @@ preparationRoutes.patch("/:groupId/preparation/:recordId", async (context) => {
 preparationRoutes.get("/:groupId/action-items", async (context) => {
   const groupId = context.req.param("groupId");
   await requireGroupRole(context, groupId, ["ADMIN", "CONSUMER", "PRODUCER"]);
-  const items = await db
-    .select({
-      ...actionItemFields,
-    })
-    .from(actionItems)
-    .where(eq(actionItems.groupId, groupId))
-    .orderBy(desc(actionItems.dueDate), desc(actionItems.createdAt));
-  return context.json({ items });
+  const status = z
+    .enum(["PENDING", "COMPLETED"])
+    .optional()
+    .safeParse(context.req.query("status"));
+  if (!status.success)
+    throw new HTTPException(400, { message: "Invalid action-item status." });
+  const result = await loadActionItems(groupId, undefined, status.data);
+  return context.json({ items: result });
 });
 
 preparationRoutes.post("/:groupId/action-items", async (context) => {

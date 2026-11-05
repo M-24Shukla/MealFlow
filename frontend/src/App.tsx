@@ -22,12 +22,19 @@ import { LeaveGroupButton } from "./components/LeaveGroupButton";
 import { MenuEditor } from "./components/MenuEditor";
 import { ReplacementDialog } from "./components/ReplacementDialog";
 import { api } from "./lib/api";
+import { loadInitialSession } from "./lib/session";
+import {
+  loadWorkspaceDay,
+  type WorkspaceDay,
+  type WorkspacePreferences,
+} from "./lib/workspace";
 import {
   dateValue,
   formatDate,
   mealIndex,
   mealName,
   mealTypes,
+  currentMealType,
   roleName,
 } from "./lib/meal";
 import type {
@@ -56,11 +63,6 @@ type CookLeaveRange = {
   reason: string | null;
 };
 
-type DailyMenuOverride = {
-  mealType: string;
-  items: WeeklyMenu["items"];
-};
-
 type DateView = {
   key: string;
   unavailable: string[];
@@ -86,10 +88,6 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [group, setGroupState] = useState<Group | null>(null);
   const workspaceRequestRef = useRef(0);
-  const setGroup = useCallback((value: Group | null) => {
-    workspaceRequestRef.current += 1;
-    setGroupState(value);
-  }, []);
   const [myGroups, setMyGroups] = useState<Group[]>([]);
   const [message, setMessage] = useState("");
   const [messageTone, setMessageTone] = useState<"success" | "error">(
@@ -102,8 +100,14 @@ export default function App() {
     undefined,
   );
   const [myJoinRequests, setMyJoinRequests] = useState<MyJoinRequest[]>([]);
+  const [joinRequestsLoaded, setJoinRequestsLoaded] = useState(false);
   const [joinRequestStatus, setJoinRequestStatus] = useState("ALL");
   const [menus, setMenus] = useState<WeeklyMenu[]>([]);
+  const [weeklyMenus, setWeeklyMenus] = useState<WeeklyMenu[]>([]);
+  const [preferencesGroup, setPreferencesGroup] = useState("");
+  const [workspaceDay, setWorkspaceDay] = useState<
+    (WorkspaceDay & { groupId: string; version: number }) | null
+  >(null);
   const [savedFoodItems, setSavedFoodItems] = useState<WeeklyMenu["items"]>([]);
   const [dateState, setDateState] = useState<DateView>(emptyDateView);
   const [recurringAbsences, setRecurringAbsences] = useState<
@@ -119,6 +123,7 @@ export default function App() {
   );
   const [dietaryCategories, setDietaryCategories] = useState<string[]>([]);
   const [cookLeaves, setCookLeaves] = useState<CookLeave[]>([]);
+  const [fullCookSchedule, setFullCookSchedule] = useState(false);
   const [cookCount, setCookCount] = useState(0);
   const [vacations, setVacations] = useState<Vacation[]>([]);
   const [menuEditorOpen, setMenuEditorOpen] = useState(false);
@@ -137,53 +142,91 @@ export default function App() {
     () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
   );
   const selectionRef = useRef("");
-  const loadMenuWorkspace = async (selectedGroup: Group) => {
-    const requestId = ++workspaceRequestRef.current;
-    const consumerRequest = selectedGroup.roles?.includes("CONSUMER")
-      ? Promise.all([
-          api<{ rules: { weekday: number; mealType: string }[] }>(
-            `/groups/${selectedGroup.id}/my/recurring-absences`,
-          ),
-          api<{ vacations: Vacation[] }>(
-            `/groups/${selectedGroup.id}/my/vacations`,
-          ),
-          api<{
-            completed: boolean;
-            absentMenuItemIds: string[];
-            dietaryCategories: string[];
-          }>(`/groups/${selectedGroup.id}/my/onboarding`),
-        ]).then(
-          (data) => ({ ok: true as const, data }),
-          (error: unknown) => ({ ok: false as const, error }),
-        )
-      : null;
-    const [menuData, cookLeaveData, foodData] = await Promise.all([
-      api<{ data: WeeklyMenu[] }>(`/groups/${selectedGroup.id}/menus`),
-      api<{ cookCount: number; leaves: CookLeave[] }>(
-        `/groups/${selectedGroup.id}/cook-leaves`,
-      ),
-      api<{ data: WeeklyMenu["items"] }>(
-        `/groups/${selectedGroup.id}/food-items`,
-      ),
-    ]);
-    if (requestId !== workspaceRequestRef.current) return;
-    setMenus(menuData.data);
-    setSavedFoodItems(foodData.data);
-    setCookLeaves(cookLeaveData.leaves);
-    setCookCount(cookLeaveData.cookCount);
-    if (consumerRequest) {
-      const consumerResult = await consumerRequest;
-      if (requestId !== workspaceRequestRef.current) return;
-      if (!consumerResult.ok) throw consumerResult.error;
-      const [availability, vacationData, onboarding] = consumerResult.data;
-      setRecurringAbsences(availability.rules);
-      setVacations(vacationData.vacations);
-      setRecurringItemAbsences(onboarding.absentMenuItemIds);
-      setDietaryCategories(onboarding.dietaryCategories);
-      setOnboardingRequired(!onboarding.completed);
-      setOnboardingOpen(!onboarding.completed);
+  const setGroup = useCallback((value: Group | null) => {
+    workspaceRequestRef.current += 1;
+    setGroupState(value);
+    setPreferencesGroup("");
+    setWeeklyMenus([]);
+    setSavedFoodItems([]);
+    setRecurringAbsences([]);
+    setVacations([]);
+    setMenuEditorOpen(false);
+    setReplacement(null);
+    setOnboardingOpen(false);
+    setWorkspaceDay(null);
+    setFullCookSchedule(false);
+    setMenus([]);
+    setDateState(emptyDateView);
+  }, []);
+  const loadPreferences = useCallback(async (selectedGroup: Group) => {
+    const requestId = workspaceRequestRef.current;
+    const data = await api<WorkspacePreferences>(
+      `/groups/${selectedGroup.id}/workspace/preferences`,
+    );
+    if (requestId !== workspaceRequestRef.current) return false;
+    setWeeklyMenus(data.menus);
+    setPreferencesGroup(selectedGroup.id);
+    if (data.consumer) {
+      setRecurringAbsences(data.consumer.rules);
+      setVacations(data.consumer.vacations);
+      setRecurringItemAbsences(data.consumer.onboarding.absentMenuItemIds);
+      setDietaryCategories(data.consumer.onboarding.dietaryCategories);
     }
-  };
+    return true;
+  }, []);
+  const loadMenuWorkspace = useCallback(
+    async (selectedGroup: Group, selectedDate: Date) => {
+      const requestId = ++workspaceRequestRef.current;
+      const date = dateValue(selectedDate);
+      const data = await loadWorkspaceDay(
+        selectedGroup.id,
+        date,
+        selectedGroup.roles?.includes("PRODUCER")
+          ? currentMealType()
+          : undefined,
+      );
+      if (requestId !== workspaceRequestRef.current) return;
+      setMenus(data.menus);
+      setCookLeaves(data.cooks.leaves);
+      setFullCookSchedule(false);
+      setCookCount(data.cooks.cookCount);
+      setWorkspaceDay({
+        ...data,
+        groupId: selectedGroup.id,
+        version: requestId,
+      });
+      if (data.consumer) {
+        setRecurringAbsences(data.consumer.rules);
+        setWeeklyMenus(data.consumer.weeklyMenus);
+        setPreferencesGroup(selectedGroup.id);
+        setVacations(data.consumer.vacations);
+        setRecurringItemAbsences(data.consumer.recurringAbsentItemIds);
+        setDateState({
+          key: `${selectedGroup.id}:${date}`,
+          unavailable: data.consumer.overrides
+            .filter((item) => item.attendance === "ABSENT")
+            .map((item) => `${item.mealDate}:${item.mealType}`),
+          available: data.consumer.overrides
+            .filter((item) => item.attendance === "PRESENT")
+            .map((item) => `${item.mealDate}:${item.mealType}`),
+          menuItems: {},
+          itemAttendance: Object.fromEntries(
+            data.consumer.itemOverrides.map((item) => [
+              `${item.mealType}:${item.itemId}`,
+              item.attendance,
+            ]),
+          ),
+        });
+        if (!data.consumer.onboardingCompleted) {
+          if (await loadPreferences(selectedGroup)) {
+            setOnboardingRequired(true);
+            setOnboardingOpen(true);
+          }
+        }
+      }
+    },
+    [loadPreferences],
+  );
   const loadDateAttendance = async (selectedGroup: Group, date: Date) => {
     const selection = `${selectedGroup.id}:${dateValue(date)}`;
     const result = await api<{
@@ -212,6 +255,7 @@ export default function App() {
       "/groups/my/join-requests",
     );
     setMyJoinRequests(result.data);
+    setJoinRequestsLoaded(true);
   };
   const groupIdFromPath = path.match(/^\/groups\/([^/]+)$/)?.[1];
   const isGroupPage = Boolean(groupIdFromPath);
@@ -225,14 +269,22 @@ export default function App() {
     selectionRef.current = selectionKey;
   }, [selectionKey]);
   useEffect(() => {
-    void api<{ user: User }>("/auth/me")
-      .then(async ({ user: authenticatedUser }) => {
+    let current = true;
+    void loadInitialSession()
+      .then(({ user: authenticatedUser, groups }) => {
+        if (!current) return;
         setUser(authenticatedUser);
-        await loadMyGroups().catch(() => undefined);
-        await loadMyJoinRequests().catch(() => undefined);
+        setMyGroups(groups);
       })
-      .catch(() => setUser(null))
-      .finally(() => setAuthLoading(false));
+      .catch(() => {
+        if (current) setUser(null);
+      })
+      .finally(() => {
+        if (current) setAuthLoading(false);
+      });
+    return () => {
+      current = false;
+    };
   }, []);
   useEffect(() => {
     if (!authLoading) return;
@@ -251,7 +303,6 @@ export default function App() {
     void Promise.resolve()
       .then(() => {
         setGroup(selectedGroup);
-        return loadMenuWorkspace(selectedGroup);
       })
       .catch(() => undefined);
   }, [group?.id, groupIdFromPath, myGroups, setGroup]);
@@ -263,7 +314,6 @@ export default function App() {
         .then(() => {
           if (!current) return;
           setGroup(invitedMembership);
-          return loadMenuWorkspace(invitedMembership);
         })
         .catch(() => undefined);
       return () => {
@@ -273,10 +323,9 @@ export default function App() {
     void api<{ group: Group }>(
       `/groups/public/${encodeURIComponent(inviteSlug)}`,
     )
-      .then(async ({ group: invitedGroup }) => {
+      .then(({ group: invitedGroup }) => {
         if (!current) return;
         setGroup(invitedGroup);
-        if (user && invitedGroup.roles) await loadMenuWorkspace(invitedGroup);
       })
       .catch(() => {
         if (current) setMessage("This invitation link is not available.");
@@ -286,59 +335,27 @@ export default function App() {
     };
   }, [inviteSlug, invitedMembership, user, setGroup]);
   useEffect(() => {
+    if (!isGroupPage || !group?.roles) return;
     let current = true;
-    if (!group?.id || !group.roles?.includes("CONSUMER")) {
-      return () => {
-        current = false;
-      };
-    }
-    void Promise.all([
-      loadDateAttendance(group, menuDate),
-      api<{ data: DailyMenuOverride[] }>(
-        `/groups/${group.id}/menu-overrides?date=${dateValue(menuDate)}`,
-      ).then(({ data }) => {
-        if (!current) return;
-        setDateState((previous) => ({
-          ...(previous.key === selectionKey
-            ? previous
-            : { ...emptyDateView, key: selectionKey }),
-          menuItems: Object.fromEntries(
-            data.map((entry) => [entry.mealType, entry.items]),
-          ),
-        }));
-      }),
-      api<{
-        recurringAbsentItemIds: string[];
-        overrides: {
-          itemId: string;
-          mealType: string;
-          attendance: "PRESENT" | "ABSENT";
-        }[];
-      }>(
-        `/groups/${group.id}/my/item-attendance?date=${dateValue(menuDate)}`,
-      ).then(({ recurringAbsentItemIds, overrides }) => {
-        if (!current) return;
-        setRecurringItemAbsences(recurringAbsentItemIds);
-        setDateState((previous) => ({
-          ...(previous.key === selectionKey
-            ? previous
-            : { ...emptyDateView, key: selectionKey }),
-          itemAttendance: Object.fromEntries(
-            overrides.map((override) => [
-              `${override.mealType}:${override.itemId}`,
-              override.attendance,
-            ]),
-          ),
-        }));
-      }),
-    ]).catch(() => {
-      if (!current) return;
-      setDateState({ ...emptyDateView, key: selectionKey });
-    });
+    void Promise.resolve()
+      .then(() => {
+        if (current) return loadMenuWorkspace(group, menuDate);
+      })
+      .catch((error: unknown) => {
+        if (current) {
+          setMessageTone("error");
+          setMessage(
+            error instanceof Error
+              ? error.message
+              : "Unable to load this date.",
+          );
+        }
+      });
     return () => {
       current = false;
+      workspaceRequestRef.current += 1;
     };
-  }, [group, menuDate, selectionKey]);
+  }, [group, menuDate, isGroupPage, loadMenuWorkspace]);
   const run = useCallback(
     async (work: () => Promise<void>, trackBusy = true) => {
       if (trackBusy) setBusy(true);
@@ -371,6 +388,8 @@ export default function App() {
         }),
       });
       setUser(r.user);
+      setMyJoinRequests([]);
+      setJoinRequestsLoaded(false);
       await loadMyGroups();
       setMessage(`Welcome, ${r.user.displayName}.`);
     });
@@ -402,7 +421,6 @@ export default function App() {
       setGroup(r.group);
       setActiveMeal(undefined);
       setMenus([]);
-      if (user) await loadMenuWorkspace(r.group).catch(() => undefined);
     });
   };
   const request = (requestedRole: "CONSUMER" | "PRODUCER") =>
@@ -424,7 +442,6 @@ export default function App() {
       setPath(window.location.pathname);
       setGroup(selectedGroup);
       setActiveMeal(undefined);
-      await loadMenuWorkspace(selectedGroup);
     });
   const leaveGroup = () => {
     if (!group || !window.confirm(`Leave ${group.name}?`)) return;
@@ -495,7 +512,11 @@ export default function App() {
   const selectedWeekday = ((menuDate.getDay() + 6) % 7) + 1;
   const visibleMenus = useMemo(
     () =>
-      menus
+      (workspaceDay?.groupId === group?.id &&
+      workspaceDay?.date === dateValue(menuDate)
+        ? menus
+        : []
+      )
         .filter((menu) => menu.weekday === selectedWeekday && menu.items.length)
         .map((menu) => ({
           ...menu,
@@ -504,7 +525,7 @@ export default function App() {
         .sort(
           (left, right) => mealIndex(left.mealType) - mealIndex(right.mealType),
         ),
-    [menus, selectedWeekday, dailyMenuItems],
+    [menus, selectedWeekday, dailyMenuItems, workspaceDay, group?.id, menuDate],
   );
   const cookUnavailableMeals = useMemo(
     () =>
@@ -539,6 +560,16 @@ export default function App() {
       (override !== "ABSENT" && !recurringItemAbsences.includes(itemId))
     );
   };
+  const loadSavedFoodItems = async () => {
+    if (!group) return false;
+    const requestId = workspaceRequestRef.current;
+    const result = await api<{ data: WeeklyMenu["items"] }>(
+      `/groups/${group.id}/food-items`,
+    );
+    if (requestId !== workspaceRequestRef.current) return false;
+    setSavedFoodItems(result.data);
+    return true;
+  };
   const saveMenu = async (
     weekday: string,
     mealType: string,
@@ -559,23 +590,46 @@ export default function App() {
         `/groups/${group.id}/menus/${weekday}/${mealType}`,
         { method: "PUT", body: JSON.stringify({ items }) },
       );
-      setMenus((current) => [
+      const update = (current: WeeklyMenu[]) => [
         ...current.filter(
           (menu) =>
             menu.weekday !== result.menu.weekday ||
             menu.mealType !== result.menu.mealType,
         ),
         result.menu,
-      ]);
+      ];
+      setWeeklyMenus(update);
+      if (Number(weekday) === selectedWeekday) setMenus(update);
       const foodData = await api<{ data: WeeklyMenu["items"] }>(
         `/groups/${group.id}/food-items`,
       );
       setSavedFoodItems(foodData.data);
       setActiveMeal(undefined);
+      await loadMenuWorkspace(group, menuDate);
       setMessage("Menu saved.");
       saved = true;
     });
     return saved;
+  };
+  const importMenus = async (json: string) => {
+    if (!group) return false;
+    setBusy(true);
+    try {
+      const result = await api<{ imported: number }>(
+        `/groups/${group.id}/menus/import`,
+        { method: "POST", body: json },
+      );
+      setMenuEditorOpen(false);
+      await run(async () => {
+        await loadPreferences(group);
+        setActiveMeal(undefined);
+        await loadMenuWorkspace(group, menuDate);
+        setMessage(`${result.imported} menus imported.`);
+      }, false);
+      return true;
+    } finally {
+      setBusy(false);
+    }
   };
   const replaceMealItem = (
     name: string,
@@ -801,6 +855,8 @@ export default function App() {
                 void run(async () => {
                   await api("/auth/logout", { method: "POST" });
                   setUser(null);
+                  setMyJoinRequests([]);
+                  setJoinRequestsLoaded(false);
                   setGroup(null);
                   setMenus([]);
                   setActiveMeal(undefined);
@@ -849,7 +905,19 @@ export default function App() {
               <p className="empty">You are not a member of any groups yet.</p>
             )}
           </div>
-          {myJoinRequests.length > 0 && (
+          <button
+            className="secondary"
+            disabled={busy}
+            onClick={() => void run(loadMyJoinRequests)}
+          >
+            {joinRequestsLoaded
+              ? "Refresh my join requests"
+              : "Show my join requests"}
+          </button>
+          {joinRequestsLoaded && myJoinRequests.length === 0 && (
+            <p className="empty">No join requests.</p>
+          )}
+          {joinRequestsLoaded && myJoinRequests.length > 0 && (
             <div className="panel join-requests">
               <h2>Your join requests</h2>
               <label>
@@ -1045,8 +1113,12 @@ export default function App() {
                 <button
                   className="secondary tour-button"
                   onClick={() => {
-                    setOnboardingRequired(false);
-                    setOnboardingOpen(true);
+                    void run(async () => {
+                      if (await loadPreferences(group)) {
+                        setOnboardingRequired(false);
+                        setOnboardingOpen(true);
+                      }
+                    });
                   }}
                 >
                   Start diner tour
@@ -1170,9 +1242,12 @@ export default function App() {
                               <button
                                 type="button"
                                 onClick={() => {
-                                  setReplacement({
-                                    mealType: menu.mealType,
-                                    item,
+                                  void run(async () => {
+                                    if (!(await loadSavedFoodItems())) return;
+                                    setReplacement({
+                                      mealType: menu.mealType,
+                                      item,
+                                    });
                                   });
                                 }}
                               >
@@ -1230,7 +1305,18 @@ export default function App() {
         </section>
       )}
       {isGroupPage && user && group?.id && group.roles && isAdmin && (
-        <button className="menu-add" onClick={() => setMenuEditorOpen(true)}>
+        <button
+          className="menu-add"
+          disabled={busy}
+          onClick={() =>
+            void run(async () => {
+              if (!group) return;
+              const loaded = await loadPreferences(group);
+              const foodLoaded = await loadSavedFoodItems();
+              if (loaded && foodLoaded) setMenuEditorOpen(true);
+            })
+          }
+        >
           + Menu
         </button>
       )}
@@ -1248,10 +1334,11 @@ export default function App() {
       {menuEditorOpen && isAdmin && (
         <MenuEditor
           busy={busy}
-          menus={menus}
+          menus={weeklyMenus}
           savedFoodItems={sortedSavedFoodItems}
           onClose={() => setMenuEditorOpen(false)}
           onSave={saveMenu}
+          onImport={importMenus}
         />
       )}
       {isGroupPage &&
@@ -1265,7 +1352,7 @@ export default function App() {
             busy={busy}
             initialAbsentItemIds={recurringItemAbsences}
             initialDietaryCategories={dietaryCategories}
-            menus={menus}
+            menus={weeklyMenus}
             required={onboardingRequired}
             onClose={() => {
               setOnboardingOpen(false);
@@ -1296,9 +1383,11 @@ export default function App() {
         group?.id &&
         group.roles &&
         isConsumer &&
-        !isProducer && (
+        !isProducer &&
+        workspaceDay?.groupId === group.id &&
+        workspaceDay.date === dateValue(menuDate) && (
           <DinerActionItems
-            key={`diner-actions:${group.id}`}
+            key={`diner-actions:${group.id}:${workspaceDay.date}:${workspaceDay.version}`}
             busy={busy}
             group={group}
             currentUserName={user.displayName}
@@ -1315,6 +1404,27 @@ export default function App() {
           <section className="cook-leave-wrapper">
             <div className="panel cook-leave-schedule">
               <h2>Cook leave schedule</h2>
+              {!fullCookSchedule && (
+                <button
+                  className="secondary"
+                  disabled={busy}
+                  onClick={() =>
+                    void run(async () => {
+                      const requestId = workspaceRequestRef.current;
+                      const data = await api<{
+                        cookCount: number;
+                        leaves: CookLeave[];
+                      }>(`/groups/${group.id}/cook-leaves`);
+                      if (requestId !== workspaceRequestRef.current) return;
+                      setCookLeaves(data.leaves);
+                      setCookCount(data.cookCount);
+                      setFullCookSchedule(true);
+                    })
+                  }
+                >
+                  Load full cook leave schedule
+                </button>
+              )}
               {cookLeaveRanges.length ? (
                 cookLeaveRanges.map((leave) => (
                   <p
@@ -1334,55 +1444,68 @@ export default function App() {
             </div>
           </section>
         )}
-      {isGroupPage && user && group?.id && group.roles && isConsumer && (
-        <DinerWorkspace
-          key={`diner-workspace:${group.id}`}
-          busy={busy}
-          menus={menus}
-          recurringAbsences={recurringAbsences}
-          vacations={vacations}
-          onSaveRecurringAbsences={(weekday, mealTypesToSkip) => {
-            const next = [
-              ...recurringAbsences.filter((rule) => rule.weekday !== weekday),
-              ...mealTypesToSkip.map((mealType) => ({ weekday, mealType })),
-            ];
-            return saveRecurringAbsences(next, true);
-          }}
-          onDeleteRecurringAbsences={(weekday) => {
-            const next = recurringAbsences.filter(
-              (rule) => rule.weekday !== weekday,
-            );
-            void saveRecurringAbsences(next, false);
-          }}
-          onSubmitVacation={markVacation}
-          onDeleteVacation={deleteVacation}
-        />
-      )}
+      {isGroupPage &&
+        user &&
+        group?.id &&
+        isConsumer &&
+        preferencesGroup === group.id && (
+          <DinerWorkspace
+            key={`diner-workspace:${group.id}`}
+            busy={busy}
+            menus={weeklyMenus}
+            recurringAbsences={recurringAbsences}
+            vacations={vacations}
+            onSaveRecurringAbsences={(weekday, mealTypesToSkip) => {
+              const next = [
+                ...recurringAbsences.filter((rule) => rule.weekday !== weekday),
+                ...mealTypesToSkip.map((mealType) => ({ weekday, mealType })),
+              ];
+              return saveRecurringAbsences(next, true);
+            }}
+            onDeleteRecurringAbsences={(weekday) => {
+              const next = recurringAbsences.filter(
+                (rule) => rule.weekday !== weekday,
+              );
+              void saveRecurringAbsences(next, false);
+            }}
+            onSubmitVacation={markVacation}
+            onDeleteVacation={deleteVacation}
+          />
+        )}
       {isGroupPage && user && group?.id && group.roles && isAdmin && (
         <AdminWorkspace
           key={`admin-workspace:${group.id}`}
+          currentUserId={user.id}
           busy={busy}
           group={group}
           run={run}
         />
       )}
-      {isGroupPage && user && group?.id && group.roles && isProducer && (
-        <CookWorkspace
-          key={`cook-workspace:${group.id}`}
-          busy={busy}
-          group={group}
-          menus={menus}
-          currentUserName={user.displayName}
-          run={run}
-          onMessage={setMessage}
-          onLeave={leaveGroup}
-          onBack={() => {
-            window.history.pushState({}, "", "/");
-            setPath("/");
-            setGroup(null);
-          }}
-        />
-      )}
+      {isGroupPage &&
+        user &&
+        group?.id &&
+        group.roles &&
+        isProducer &&
+        workspaceDay?.groupId === group.id &&
+        workspaceDay.producer && (
+          <CookWorkspace
+            key={`cook-workspace:${group.id}:${workspaceDay.date}:${workspaceDay.version}`}
+            initialDay={workspaceDay}
+            onDateChange={(date) => setMenuDate(new Date(`${date}T12:00:00`))}
+            busy={busy}
+            group={group}
+            menus={menus}
+            currentUserName={user.displayName}
+            run={run}
+            onMessage={setMessage}
+            onLeave={leaveGroup}
+            onBack={() => {
+              window.history.pushState({}, "", "/");
+              setPath("/");
+              setGroup(null);
+            }}
+          />
+        )}
       {message && (
         <p className={`message message-${messageTone}`} role="status">
           {message}

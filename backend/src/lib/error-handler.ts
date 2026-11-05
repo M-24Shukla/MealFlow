@@ -23,11 +23,18 @@ export const handleError: ErrorHandler = (error, context) => {
     cause && "code" in cause && typeof cause.code === "string"
       ? cause.code
       : undefined;
+  // node-postgres can report connection/pool timeouts without an error code.
+  const connectionTimeout =
+    databaseError &&
+    /^(timeout expired|timeout exceeded when trying to connect|Connection terminated due to connection timeout)$/.test(
+      cause?.message ?? "",
+    );
   const unavailable =
     databaseError &&
-    ((databaseCode !== undefined &&
-      (connectionCodes.has(databaseCode) ||
-        /^08[0-9A-Z]{3}$/.test(databaseCode))) ||
+    (connectionTimeout ||
+      (databaseCode !== undefined &&
+        (connectionCodes.has(databaseCode) ||
+          /^08[0-9A-Z]{3}$/.test(databaseCode))) ||
       (databaseCode === "XX000" &&
         /tenant(?:\/user| or user).*not found/i.test(cause?.message ?? "")));
   const status =
@@ -60,6 +67,7 @@ export const handleError: ErrorHandler = (error, context) => {
         code,
         message,
         ...(databaseError ? { category: "DATABASE_ERROR" } : {}),
+        ...(connectionTimeout ? { databaseReason: "CONNECTION_TIMEOUT" } : {}),
         ...(databaseCode && /^[A-Z0-9_]{5,20}$/.test(databaseCode)
           ? { databaseCode }
           : {}),

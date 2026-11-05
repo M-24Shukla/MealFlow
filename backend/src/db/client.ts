@@ -6,7 +6,7 @@ import { supabaseCa } from "./supabase-ca.js";
 
 const pool = new Pool({
   connectionString: config.DATABASE_URL,
-  max: 1,
+  max: config.NODE_ENV === "development" ? 5 : 1,
   connectionTimeoutMillis: 10_000,
   idleTimeoutMillis: 10_000,
   allowExitOnIdle: true,

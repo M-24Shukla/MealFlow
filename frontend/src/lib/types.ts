@@ -24,6 +24,8 @@ export type MyJoinRequest = {
 
 export type Member = {
   membershipId: string;
+  userId: string;
+  isCreator?: boolean;
   displayName: string;
   email: string;
   roles: string[];

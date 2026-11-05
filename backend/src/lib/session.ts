@@ -34,9 +34,15 @@ export async function authMiddleware(
   context: Context<{ Variables: AppVariables }>,
   next: Next,
 ) {
+  const startedAt = performance.now();
   const token = getCookie(context, cookieName);
   if (!token) {
     context.set("user", null);
+    context.header(
+      "Server-Timing",
+      `auth;dur=${(performance.now() - startedAt).toFixed(1)}`,
+      { append: true },
+    );
     return next();
   }
 
@@ -76,6 +82,11 @@ export async function authMiddleware(
     });
   }
   context.set("user", user);
+  context.header(
+    "Server-Timing",
+    `auth;dur=${(performance.now() - startedAt).toFixed(1)}`,
+    { append: true },
+  );
   return next();
 }
 
