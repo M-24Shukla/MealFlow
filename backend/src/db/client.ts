@@ -1,15 +1,8 @@
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { config } from "../config.js";
 import * as schema from "./schema.js";
-
-// Netlify bundles the source modules but includes the CA at its repository path.
-const sourceCertificate = new URL("../../prod-supabase.cer", import.meta.url);
-const certificate = existsSync(sourceCertificate)
-  ? sourceCertificate
-  : resolve("backend/prod-supabase.cer");
+import { supabaseCa } from "./supabase-ca.js";
 
 const pool = new Pool({
   connectionString: config.DATABASE_URL,
@@ -18,7 +11,7 @@ const pool = new Pool({
   idleTimeoutMillis: 10_000,
   allowExitOnIdle: true,
   ssl: {
-    ca: readFileSync(certificate, "utf8"),
+    ca: supabaseCa,
     rejectUnauthorized: true,
   },
 });

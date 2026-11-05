@@ -30,7 +30,7 @@ Speech-to-text ingredient capture, push notifications, grocery fulfillment, paym
 
 ## Local configuration
 
-Copy `backend/.env.example` to `backend/.env`, copy the full pooler connection string from Supabase **Connect**, replace its password placeholder, and copy `frontend/.env.example` to `frontend/.env`. Do not commit either file. Download the Supabase server root certificate from **Database → Settings → SSL Configuration** to `backend/prod-supabase.cer`. The backend loads this certificate automatically for verified SSL connections. Local development can use the Session pooler; Netlify should use the Transaction pooler.
+Copy `backend/.env.example` to `backend/.env`, copy the full pooler connection string from Supabase **Connect**, replace its password placeholder, and copy `frontend/.env.example` to `frontend/.env`. Do not commit either file. The public Supabase root CA is bundled from `backend/src/db/supabase-ca.ts` for verified SSL connections. If the CA changes, download the replacement from **Database → Settings → SSL Configuration** and update the PEM string in that module. Local development can use the Session pooler; Netlify should use the Transaction pooler.
 
 ```bash
 cd backend && npm install && npm run db:generate && npm run dev
@@ -83,7 +83,7 @@ For a local platform preview, run `npx netlify-cli dev` from the repository root
 ## Alternative: Render deployment
 
 - Set the application timezone per group (for example `Asia/Kolkata`); never infer it from a browser.
-- In Render, set `DATABASE_URL` as a secret using Supabase's Session pooler connection string. Commit the public Supabase server root certificate at `backend/prod-supabase.cer`; the backend uses it for certificate verification.
+- In Render, set `DATABASE_URL` as a secret using Supabase's Session pooler connection string. The backend uses the bundled public Supabase root CA in `backend/src/db/supabase-ca.ts` for certificate verification.
 - Configure `ALLOWED_CORS_ORIGINS`, `SESSION_TTL_DAYS`, and any monitoring secrets as Render environment variables. Sessions default to a rolling 365-day lifetime; set `SESSION_TTL_DAYS` to a shorter value if required by your security policy.
 - Apply Drizzle migrations before each release; use forward-only corrective migrations in production.
 - Enforce HTTPS, a CSP, rate limits on write endpoints, and server-side membership/role checks.

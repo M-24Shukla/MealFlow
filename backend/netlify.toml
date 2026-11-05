@@ -9,4 +9,3 @@
 [functions]
   directory = "backend/functions"
   node_bundler = "esbuild"
-  included_files = ["backend/prod-supabase.cer"]
