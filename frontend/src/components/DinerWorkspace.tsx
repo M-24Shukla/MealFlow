@@ -1,4 +1,4 @@
-import { useRef, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import "../styles/diner.css";
 import { mealIndex, mealName, mealTypes, weekdays } from "../lib/meal";
 import type { Vacation, WeeklyMenu } from "../lib/types";
@@ -12,24 +12,17 @@ type DinerWorkspaceProps = {
   menus: WeeklyMenu[];
   recurringAbsences: RecurringAbsence[];
   vacations: Vacation[];
-  editingVacation: Vacation | null;
-  availabilityDialogOpen: boolean;
-  availabilityWeekday: string;
-  editingAvailabilityDay: number | null;
-  onAvailabilityWeekdayChange: (weekday: string) => void;
-  onCloseAvailabilityDialog: () => void;
   onSaveRecurringAbsences: (
-    event: FormEvent<HTMLFormElement>,
     weekday: number,
     mealTypes: string[],
-  ) => void;
-  onEditRecurringAbsences: (weekday: number) => void;
+  ) => Promise<boolean>;
   onDeleteRecurringAbsences: (weekday: number) => void;
-  onAddRecurringAbsences: () => void;
-  onSubmitVacation: (event: FormEvent<HTMLFormElement>) => void;
-  onEditVacation: (vacation: Vacation) => void;
-  onDeleteVacation: (vacation: Vacation) => void;
-  onCancelVacationEdit: () => void;
+  onSubmitVacation: (
+    event: FormEvent<HTMLFormElement>,
+    editingVacation: Vacation | null,
+    onSaved: () => void,
+  ) => void;
+  onDeleteVacation: (vacation: Vacation) => Promise<boolean>;
 };
 
 export function DinerWorkspace({
@@ -37,22 +30,18 @@ export function DinerWorkspace({
   menus,
   recurringAbsences,
   vacations,
-  editingVacation,
-  availabilityDialogOpen,
-  availabilityWeekday,
-  editingAvailabilityDay,
-  onAvailabilityWeekdayChange,
-  onCloseAvailabilityDialog,
   onSaveRecurringAbsences,
-  onEditRecurringAbsences,
   onDeleteRecurringAbsences,
-  onAddRecurringAbsences,
   onSubmitVacation,
-  onEditVacation,
   onDeleteVacation,
-  onCancelVacationEdit,
 }: DinerWorkspaceProps) {
   const vacationEndRef = useRef<HTMLInputElement>(null);
+  const [editingVacation, setEditingVacation] = useState<Vacation | null>(null);
+  const [availabilityDialogOpen, setAvailabilityDialogOpen] = useState(false);
+  const [availabilityWeekday, setAvailabilityWeekday] = useState("1");
+  const [editingAvailabilityDay, setEditingAvailabilityDay] = useState<
+    number | null
+  >(null);
 
   return (
     <>
@@ -67,13 +56,15 @@ export function DinerWorkspace({
             <form
               onSubmit={(event) => {
                 event.preventDefault();
-                onSaveRecurringAbsences(
-                  event,
+                const meals = new FormData(event.currentTarget)
+                  .getAll("mealType")
+                  .map(String);
+                void onSaveRecurringAbsences(
                   Number(availabilityWeekday),
-                  new FormData(event.currentTarget)
-                    .getAll("mealType")
-                    .map(String),
-                );
+                  meals,
+                ).then((saved) => {
+                  if (saved) setAvailabilityDialogOpen(false);
+                });
               }}
             >
               <label>
@@ -81,7 +72,7 @@ export function DinerWorkspace({
                 <select
                   value={availabilityWeekday}
                   onChange={(event) =>
-                    onAvailabilityWeekdayChange(event.target.value)
+                    setAvailabilityWeekday(event.target.value)
                   }
                 >
                   {weekdays.map((day, index) => (
@@ -120,11 +111,13 @@ export function DinerWorkspace({
                     </label>
                   ))}
               </fieldset>
-              <button className="primary">Add</button>
+              <button className="primary" disabled={busy}>
+                Add
+              </button>
               <button
                 type="button"
                 className="text-button"
-                onClick={onCloseAvailabilityDialog}
+                onClick={() => setAvailabilityDialogOpen(false)}
               >
                 Cancel
               </button>
@@ -137,9 +130,16 @@ export function DinerWorkspace({
         <div className="attendance-columns">
           <RecurringUnavailabilityCard
             rules={recurringAbsences}
-            onEdit={onEditRecurringAbsences}
+            onEdit={(weekday) => {
+              setAvailabilityWeekday(String(weekday));
+              setEditingAvailabilityDay(weekday);
+              setAvailabilityDialogOpen(true);
+            }}
             onDelete={onDeleteRecurringAbsences}
-            onAdd={onAddRecurringAbsences}
+            onAdd={() => {
+              setEditingAvailabilityDay(null);
+              setAvailabilityDialogOpen(true);
+            }}
           />
           <section className="attendance-card">
             <h3>Planned vacation</h3>
@@ -156,7 +156,7 @@ export function DinerWorkspace({
                       type="button"
                       aria-label="Edit vacation"
                       title="Edit vacation"
-                      onClick={() => onEditVacation(vacation)}
+                      onClick={() => setEditingVacation(vacation)}
                     >
                       ✎
                     </button>
@@ -164,7 +164,12 @@ export function DinerWorkspace({
                       type="button"
                       aria-label="Delete vacation"
                       title="Delete vacation"
-                      onClick={() => onDeleteVacation(vacation)}
+                      onClick={() => {
+                        void onDeleteVacation(vacation).then((deleted) => {
+                          if (deleted && editingVacation?.id === vacation.id)
+                            setEditingVacation(null);
+                        });
+                      }}
                     >
                       ×
                     </button>
@@ -176,7 +181,11 @@ export function DinerWorkspace({
             )}
             <form
               key={editingVacation?.id ?? "new"}
-              onSubmit={onSubmitVacation}
+              onSubmit={(event) =>
+                onSubmitVacation(event, editingVacation, () =>
+                  setEditingVacation(null),
+                )
+              }
             >
               <label>
                 Start date
@@ -244,7 +253,7 @@ export function DinerWorkspace({
                 <button
                   className="text-button"
                   type="button"
-                  onClick={onCancelVacationEdit}
+                  onClick={() => setEditingVacation(null)}
                 >
                   Cancel
                 </button>

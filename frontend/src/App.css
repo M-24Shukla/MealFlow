@@ -211,14 +211,15 @@ fieldset input {
 }
 .message {
   border-radius: 8px;
-  bottom: 24px;
   color: #fff;
   line-height: 1.5;
   margin: 0;
   max-width: min(520px, calc(100vw - 48px));
   padding: 12px 16px;
+  pointer-events: none;
   position: fixed;
   right: 24px;
+  top: 24px;
   z-index: 10;
 }
 .message-success {
@@ -1103,7 +1104,23 @@ button:disabled {
     grid-template-columns: 1fr;
   }
   .action-items-columns {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .daily-menu-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .daily-menu li {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .dish-actions {
+    margin-left: 0;
+  }
+  .menu-add {
+    display: block;
+    margin: 0 auto 24px;
+    position: static;
+    width: calc(100% - 56px);
   }
   .dietary-preference-list {
     grid-template-columns: 1fr;

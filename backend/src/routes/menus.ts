@@ -4,6 +4,7 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { db } from "../db/client.js";
 import { materializeMealOccurrence } from "../db/domain.js";
+import { groupJoinedRows } from "../db/group-joined-rows.js";
 import {
   groups,
   mealOccurrenceItems,
@@ -123,9 +124,10 @@ menuRoutes.get("/:groupId/menus", async (context) => {
       message: "weekday must be between 1 and 7.",
     });
   }
-  const menus = await db
-    .select()
+  const rows = await db
+    .select({ parent: weeklyMenus, item: menuItems })
     .from(weeklyMenus)
+    .leftJoin(menuItems, eq(menuItems.menuId, weeklyMenus.id))
     .where(
       weekday
         ? and(
@@ -134,17 +136,12 @@ menuRoutes.get("/:groupId/menus", async (context) => {
           )
         : eq(weeklyMenus.groupId, groupId),
     )
-    .orderBy(asc(weeklyMenus.weekday), asc(weeklyMenus.mealType));
-  const data = await Promise.all(
-    menus.map(async (menu) => ({
-      ...menu,
-      items: await db
-        .select()
-        .from(menuItems)
-        .where(eq(menuItems.menuId, menu.id))
-        .orderBy(asc(menuItems.sortOrder)),
-    })),
-  );
+    .orderBy(
+      asc(weeklyMenus.weekday),
+      asc(weeklyMenus.mealType),
+      asc(menuItems.sortOrder),
+    );
+  const data = groupJoinedRows(rows);
   return context.json({ data });
 });
 
@@ -201,31 +198,33 @@ menuRoutes.get("/:groupId/menu-overrides", async (context) => {
   if (!mealDate.success) {
     throw new HTTPException(400, { message: "Invalid date." });
   }
-  const occurrences = await db
-    .select({ id: mealOccurrences.id, mealType: mealOccurrences.mealType })
+  const rows = await db
+    .select({
+      parent: { id: mealOccurrences.id, mealType: mealOccurrences.mealType },
+      item: {
+        id: mealOccurrenceItems.id,
+        name: mealOccurrenceItems.name,
+        category: mealOccurrenceItems.category,
+        recipeUrl: mealOccurrenceItems.recipeUrl,
+      },
+    })
     .from(mealOccurrences)
+    .leftJoin(
+      mealOccurrenceItems,
+      eq(mealOccurrenceItems.occurrenceId, mealOccurrences.id),
+    )
     .where(
       and(
         eq(mealOccurrences.groupId, groupId),
         eq(mealOccurrences.mealDate, mealDate.data),
         eq(mealOccurrences.isMenuOverridden, true),
       ),
-    );
-  const data = await Promise.all(
-    occurrences.map(async (occurrence) => ({
-      mealType: occurrence.mealType,
-      items: await db
-        .select({
-          id: mealOccurrenceItems.id,
-          name: mealOccurrenceItems.name,
-          category: mealOccurrenceItems.category,
-          recipeUrl: mealOccurrenceItems.recipeUrl,
-        })
-        .from(mealOccurrenceItems)
-        .where(eq(mealOccurrenceItems.occurrenceId, occurrence.id))
-        .orderBy(asc(mealOccurrenceItems.sortOrder)),
-    })),
-  );
+    )
+    .orderBy(asc(mealOccurrences.mealType), asc(mealOccurrenceItems.sortOrder));
+  const data = groupJoinedRows(rows).map(({ mealType, items }) => ({
+    mealType,
+    items,
+  }));
   return context.json({ data });
 });
 

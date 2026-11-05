@@ -1,7 +1,22 @@
 [build]
-  base = "frontend"
-  command = "npm run build"
-  publish = "dist"
+  base = "."
+  command = "npm --prefix backend ci && npm --prefix frontend ci && npm run build"
+  publish = "frontend/dist"
+
+[build.environment]
+  NODE_VERSION = "24"
+  VITE_API_BASE_URL = "/api/v1"
+
+[functions]
+  directory = "backend/functions"
+  node_bundler = "esbuild"
+  included_files = ["backend/prod-supabase.cer"]
+
+[dev]
+  command = "npm --prefix frontend run dev"
+  targetPort = 5173
+  port = 8888
+  framework = "#custom"
 
 [[redirects]]
   from = "/*"

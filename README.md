@@ -9,12 +9,12 @@ CookDuKoo is a multi-tenant web app for shared kitchens and mess groups. It lets
 | Layer | Choice | Reason |
 |---|---|---|
 | Web UI | React + TypeScript + Vite | Fast, accessible responsive dashboard with a small client bundle. |
-| API | Node.js + Hono | Typed REST API running as a Render web service. |
+| API | Node.js + Hono on Netlify Functions | Typed REST API deployed with the frontend on one origin. |
 | Data | Supabase PostgreSQL | Relational storage and transactional writes for groups, memberships, and meal operations. |
 | Data access | Drizzle ORM | Typed PostgreSQL schema and generated migrations. |
 | Authentication | Email/password + HTTP-only sessions | Supports invited external residents without a workspace account. |
-| Observability | Render logs + Sentry | Request errors, performance, and release attribution. |
-| CI/CD | Render Blueprint | Repeatable static-site, API, and PostgreSQL deployment. |
+| Observability | Netlify function logs | Structured API failure logs. |
+| CI/CD | Netlify | Builds the React site and bundles the Hono API as a Node function. |
 
 ## Product scope: MVP
 
@@ -30,7 +30,7 @@ Speech-to-text ingredient capture, push notifications, grocery fulfillment, paym
 
 ## Local configuration
 
-Copy `backend/.env.example` to `backend/.env`, replace `[DATABASE_PASSWORD]` with the Supabase database password, and copy `frontend/.env.example` to `frontend/.env`. Do not commit either file. Download the Supabase server root certificate from **Database → Settings → SSL Configuration** to `backend/prod-supabase.cer`. The backend loads this certificate automatically for verified SSL connections.
+Copy `backend/.env.example` to `backend/.env`, copy the full pooler connection string from Supabase **Connect**, replace its password placeholder, and copy `frontend/.env.example` to `frontend/.env`. Do not commit either file. Download the Supabase server root certificate from **Database → Settings → SSL Configuration** to `backend/prod-supabase.cer`. The backend loads this certificate automatically for verified SSL connections. Local development can use the Session pooler; Netlify should use the Transaction pooler.
 
 ```bash
 cd backend && npm install && npm run db:generate && npm run dev
@@ -55,7 +55,32 @@ Run the release smoke suite against the configured Supabase project after applyi
 cd backend && npm run test:smoke
 ```
 
-## Required deployment configuration
+## Deploy frontend and API to Netlify
+
+1. Import this repository into Netlify. Use the repository root as the base directory, and clear any old `frontend` package-directory setting. The committed `netlify.toml` installs both packages, builds them, publishes `frontend/dist`, and bundles `backend/functions/api.mts`.
+2. Set these environment variables in Netlify with the **Functions** scope (or all scopes):
+
+   | Variable | Value |
+   |---|---|
+   | `DATABASE_URL` | Full **Transaction pooler** URI copied from Supabase **Connect**, normally port `6543`; replace only the password placeholder. |
+   | `SESSION_SECRET` | A stable, random secret of at least 32 characters; generate with `openssl rand -hex 32`. |
+   | `NODE_ENV` | `production` |
+   | `ALLOWED_CORS_ORIGINS` | Your exact site origin, such as `https://your-site.netlify.app`. |
+   | `SESSION_TTL_DAYS` | Optional; defaults to `365`. |
+
+   Leave `SESSION_COOKIE_DOMAIN` unset so cookies belong to the current site. Never prefix backend secrets with `VITE_`. The build sets `VITE_API_BASE_URL=/api/v1`; remove any older Netlify override pointing to Render or localhost. Redeploy after changing variables.
+3. Apply committed migrations separately against your Supabase project before the first deployment and whenever schema changes. From `backend`, run `npm run db:migrate` with a **Session pooler** connection string in the local environment. Migrations are deliberately excluded from Netlify builds so deploy previews cannot change the production schema.
+4. Deploy the site. Verify `/health` returns `{"status":"ok"}`, `/api/v1/auth/me` returns JSON with status `401` while signed out, and registration/login works with a session cookie. `/health` checks the function only; login verifies database access. Frontend routes continue to use the SPA fallback.
+
+The function forwards Web Requests directly to Hono without starting a listening server. The PostgreSQL pool is reused within a warm instance and capped at one connection per instance. Queries use node-postgres without named prepared statements, compatible with Supabase's Transaction pooler. The public CA certificate is included in the function bundle.
+
+Netlify's credit-based Free plan currently includes 300 monthly credits shared by production deploys, requests, bandwidth, and function compute. Sites pause when the allowance is exhausted. Check [current pricing](https://www.netlify.com/pricing/) and your account's plan; legacy accounts may have different limits. Supabase remains a separate service with its own quota. Cold starts and database network latency still affect response times.
+
+The current authentication rate limiter is held in process memory. On Netlify it limits attempts only within each warm instance, so it is not a global brute-force limit. Use platform-level rate limiting or shared storage if a global limit is required.
+
+For a local platform preview, run `npx netlify-cli dev` from the repository root after making the backend variables available to that process. Normal two-process development with `npm run dev` in each package remains available.
+
+## Alternative: Render deployment
 
 - Set the application timezone per group (for example `Asia/Kolkata`); never infer it from a browser.
 - In Render, set `DATABASE_URL` as a secret using Supabase's Session pooler connection string. Commit the public Supabase server root certificate at `backend/prod-supabase.cer`; the backend uses it for certificate verification.
@@ -63,4 +88,4 @@ cd backend && npm run test:smoke
 - Apply Drizzle migrations before each release; use forward-only corrective migrations in production.
 - Enforce HTTPS, a CSP, rate limits on write endpoints, and server-side membership/role checks.
 
-See `openspec/changes/implement-weekly-menu-management/` for the implementation contract and `render.yaml` for deployment configuration.
+See `openspec/changes/implement-weekly-menu-management/` for the implementation contract, `netlify.toml` for Netlify deployment, and `render.yaml` for the alternative Render deployment.

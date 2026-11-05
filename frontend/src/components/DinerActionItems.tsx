@@ -9,7 +9,7 @@ type DinerActionItemsProps = {
   group: Group;
   currentUserName: string;
   embedded?: boolean;
-  run: (work: () => Promise<void>) => Promise<void>;
+  run: (work: () => Promise<void>, trackBusy?: boolean) => Promise<void>;
   onMessage: (message: string) => void;
 };
 
@@ -24,12 +24,16 @@ export function DinerActionItems({
   const [items, setItems] = useState<ActionItem[]>([]);
 
   useEffect(() => {
+    let current = true;
     void run(async () => {
       const result = await api<{ items: ActionItem[] }>(
         `/groups/${group.id}/action-items`,
       );
-      setItems(result.items);
-    });
+      if (current) setItems(result.items);
+    }, false);
+    return () => {
+      current = false;
+    };
   }, [group.id, run]);
 
   const addItem = (event: FormEvent<HTMLFormElement>) => {

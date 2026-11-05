@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 type BarcodeDetectorInstance = {
   detect: (source: HTMLVideoElement) => Promise<{ rawValue: string }[]>;
@@ -26,6 +26,7 @@ export function QrJoinScanner({ disabled, onScan }: QrJoinScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [status, setStatus] = useState("");
+  const reportScan = useEffectEvent((code: string) => onScan(code));
 
   useEffect(() => {
     if (!isScanning) return;
@@ -38,26 +39,30 @@ export function QrJoinScanner({ disabled, onScan }: QrJoinScannerProps) {
 
     let stream: MediaStream | undefined;
     let frameId = 0;
+    let timeoutId = 0;
     let active = true;
     const detector = new BarcodeDetector({ formats: ["qr_code"] });
+    const scheduleScan = () => {
+      timeoutId = window.setTimeout(() => {
+        if (active) frameId = requestAnimationFrame(scan);
+      }, 150);
+    };
     const scan = async () => {
+      if (!active) return;
       const video = videoRef.current;
-      if (
-        !active ||
-        !video ||
-        video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
-      ) {
-        frameId = requestAnimationFrame(scan);
+      if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        scheduleScan();
         return;
       }
       const codes = await detector.detect(video).catch(() => []);
+      if (!active) return;
       if (codes[0]?.rawValue) {
         setStatus("Code scanned. Opening group…");
         setIsScanning(false);
-        onScan(codeFromQrValue(codes[0].rawValue));
+        reportScan(codeFromQrValue(codes[0].rawValue));
         return;
       }
-      frameId = requestAnimationFrame(scan);
+      scheduleScan();
     };
 
     void navigator.mediaDevices
@@ -81,9 +86,10 @@ export function QrJoinScanner({ disabled, onScan }: QrJoinScannerProps) {
     return () => {
       active = false;
       cancelAnimationFrame(frameId);
+      window.clearTimeout(timeoutId);
       stream?.getTracks().forEach((track) => track.stop());
     };
-  }, [isScanning, onScan]);
+  }, [isScanning]);
 
   return (
     <div className="qr-scanner" role="tabpanel">

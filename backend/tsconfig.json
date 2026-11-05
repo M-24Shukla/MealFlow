@@ -8,5 +8,5 @@
     "esModuleInterop": true,
     "outDir": "dist"
   },
-  "include": ["src", "drizzle.config.ts"]
+  "include": ["src", "functions", "drizzle.config.ts"]
 }
